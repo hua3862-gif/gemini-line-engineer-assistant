@@ -15,7 +15,7 @@ line_bot_api = LineBotApi(os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 # 將這裡換成您剛剛複製的試算表 ID
-SPREADSHEET_ID = '請填入您的試算表ID' 
+SPREADSHEET_ID = '1QNC3xAakhhheCQXaWA54zkSkmT03u72Rd3wElIC_g0g' 
 
 sheet = None
 
