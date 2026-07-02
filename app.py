@@ -1,7 +1,7 @@
 import os
 import json
 import gspread
-from google import genai
+import google.generativeai as genai
 from datetime import datetime
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -14,7 +14,10 @@ app = Flask(__name__)
 # 1. API 設定
 line_bot_api = LineBotApi(os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
-client = genai.Client(api_key=os.environ.get('GEMINI_API_KEY'))
+
+# 初始化 Gemini (使用正確的 SDK 寫法)
+genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # 請填入您的試算表 ID
 SPREADSHEET_ID = '您的試算表ID' 
@@ -35,7 +38,7 @@ def init_sheet():
 
 init_sheet()
 
-# 3. AI 結構化提取邏輯 (含嚴重程度準則)
+# 3. AI 結構化提取邏輯
 def process_with_ai(user_msg):
     prompt = f"""
     你是專業工程監造主管。請分析工地訊息，並僅以 JSON 格式輸出。
@@ -54,10 +57,7 @@ def process_with_ai(user_msg):
         "嚴重程度": "高/中/低"
     }}
     """
-    response = client.models.generate_content(
-        model='gemini-1.5-flash',
-        contents=prompt,
-    )
+    response = model.generate_content(prompt)
     text = response.text.replace('```json', '').replace('```', '').strip()
     return json.loads(text)
 
@@ -68,7 +68,7 @@ def handle_message(event):
     try:
         data = process_with_ai(user_msg)
         
-        # 寫入 Google Sheets
+        # 寫入 Google Sheets (依照欄位順序: 記錄時間, 站別, 位置, 設備, 缺失項目, 嚴重程度)
         if sheet:
             sheet.append_row([
                 str(datetime.now()),
@@ -80,13 +80,13 @@ def handle_message(event):
             ])
             reply = f"已記錄成功！\n缺失：{data.get('缺失項目')}\n程度：{data.get('嚴重程度')}\n位置：{data.get('站別')}-{data.get('位置')}"
         else:
-            reply = "系統錯誤：無法連線至試算表。"
+            reply = "系統錯誤：無法寫入試算表。"
     except Exception as e:
-        reply = f"AI 解析錯誤，請檢查輸入內容。錯誤: {e}"
+        reply = f"處理訊息失敗，請確認內容格式。錯誤: {e}"
     
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-# 5. Webhook 路由
+# 5. Flask Webhook 路由
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
