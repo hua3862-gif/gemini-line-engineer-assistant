@@ -17,7 +17,7 @@ handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 # 初始化 Gemini (使用正確的 SDK 寫法)
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # 請填入您的試算表 ID
 SPREADSHEET_ID = '您的試算表ID' 
