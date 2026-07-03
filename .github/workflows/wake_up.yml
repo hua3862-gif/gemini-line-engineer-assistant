@@ -2,10 +2,10 @@ name: Wake Up Bot
 
 on:
   schedule:
-    # 這行設定排程：每 15 分鐘執行一次
-    # 使用 cron 語法，*/10 代表每 15 分鐘
+    # 設定每 15 分鐘執行一次，避免 Render 免費實例休眠
     - cron: '*/15 * * * *'
-  workflow_dispatch: # 允許您在 GitHub 頁面手動點擊執行
+  # 允許您在 GitHub 頁面的 Actions 分頁手動觸發測試
+  workflow_dispatch:
 
 jobs:
   ping:
@@ -13,5 +13,5 @@ jobs:
     steps:
       - name: Ping the bot
         run: |
-          # 請將下方的網址換成您 Render 專案的 /ping 網址
+          # 向您的 Render 專案發送 GET 請求，觸發 /ping 路由
           curl -f https://gemini-line-engineer-assistant.onrender.com/ping
