@@ -17,7 +17,7 @@ handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 # 初始化 Gemini (採用最標準的完整路徑格式)
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-native-audio-latest')
 
 # 2. 初始化 Google Sheets
 sheet = None
