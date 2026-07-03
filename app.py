@@ -17,7 +17,7 @@ handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 # 初始化 Gemini (採用最標準的完整路徑格式)
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('models/gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # 2. 初始化 Google Sheets
 sheet = None
@@ -37,6 +37,10 @@ def init_sheet():
         print(f"DEBUG: 初始化試算表失敗: {e}")
 
 init_sheet()
+# 測試用：印出所有可用的模型名稱
+print("--- 可用的模型列表 ---")
+for m in genai.list_models():
+    print(m.name)
 
 # 3. AI 結構化提取邏輯
 def process_with_ai(user_msg):
