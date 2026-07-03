@@ -81,6 +81,10 @@ def handle_message(event):
     
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
+@app.route("/ping", methods=['GET'])
+def ping():
+    return "OK", 200
+    
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
