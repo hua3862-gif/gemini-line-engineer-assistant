@@ -15,9 +15,9 @@ app = Flask(__name__)
 line_bot_api = LineBotApi(os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
-# 初始化 Gemini (採用最標準的完整路徑格式)
+# 初始化 Gemini (使用您環境中確認可運行的模型)
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-native-audio-latest')
 
 # 2. 初始化 Google Sheets
 sheet = None
@@ -32,15 +32,10 @@ def init_sheet():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client_gspread = gspread.authorize(creds)
         sheet = client_gspread.open_by_key(spreadsheet_id).sheet1
-        print("DEBUG: 試算表連結成功")
     except Exception as e:
         print(f"DEBUG: 初始化試算表失敗: {e}")
 
 init_sheet()
-# 測試用：印出所有可用的模型名稱
-print("--- 可用的模型列表 ---")
-for m in genai.list_models():
-    print(m.name)
 
 # 3. AI 結構化提取邏輯
 def process_with_ai(user_msg):
