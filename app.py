@@ -15,7 +15,7 @@ handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 # 初始化 Gemini
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # 讀取環境變數 (請確認 Render 已設定這些 Key)
 SUCCESS_GROUP_ID = os.environ.get('SUCCESS_GROUP_ID')
