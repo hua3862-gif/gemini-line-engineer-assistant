@@ -16,7 +16,7 @@ line_bot_api = LineBotApi(os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.environ.get('LINE_CHANNEL_SECRET'))
 
 genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-1.5-flash') # 建議使用 1.5-flash 穩定性較佳
+model = genai.GenerativeModel('gemini-2.5-flash') # 建議使用 2.5-flash 穩定性較佳
 
 # 2. 動態初始化 Google Sheets 函式
 def get_sheet():
