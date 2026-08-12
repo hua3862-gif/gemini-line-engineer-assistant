@@ -9,18 +9,17 @@ from notion_client import Client as NotionClient
 
 app = Flask(__name__)
 
-# 初始化 API 客戶端
+# 初始化設定
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
-# 使用新版 Google GenAI Client
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 
-DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
+# 使用新版 SDK 初始化
+client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 MODEL_NAME = "gemini-2.0-flash"
+DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 def add_to_notion(title, date_info):
-    """將解析後的資料寫入 Notion"""
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
@@ -42,20 +41,15 @@ def callback():
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     text = event.message.text
-    
     if text.startswith("時程："):
         try:
-            # 使用新版 API 呼叫
             response = client.models.generate_content(
                 model=MODEL_NAME,
                 contents=f"請將此工程時程解析為 JSON 格式 (欄位: title, date): {text}"
             )
-            
-            # 清理 AI 回傳的 Markdown 標記
             content = response.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(content)
             
-            # 寫入 Notion
             add_to_notion(data['title'], data['date'])
             
             line_bot_api.reply_message(
@@ -69,4 +63,6 @@ def handle_message(event):
             )
 
 if __name__ == "__main__":
-    app.run(port=10000)
+    # Render 會自動設定 PORT 環境變數，若無則預設 10000
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
