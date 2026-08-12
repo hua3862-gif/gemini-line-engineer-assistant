@@ -16,7 +16,7 @@ notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 
 # 使用新版 SDK 初始化
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME = "gemini-2.5-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 def add_to_notion(title, date_info):
