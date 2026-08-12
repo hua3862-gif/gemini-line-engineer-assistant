@@ -20,12 +20,12 @@ MODEL_NAME = "gemini-2.5-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 def add_to_notion(title, relative_day):
-    """將解析後的資料寫入 Notion，對應 '項目名稱' 與 '相對天數(NTP+天)' 欄位"""
+    """將解析後的資料寫入 Notion，確保必定能寫入資料庫的主標題欄位"""
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
-            "項目名稱": {"title": [{"text": {"content": title}}]},
-            "相對天數(NTP+天)": {"rich_text": [{"text": {"content": str(relative_day)}}]}
+            # 請確保您的 Notion 資料庫第一欄（Title 屬性）名稱叫 "項目名稱"
+            "項目名稱": {"title": [{"text": {"content": f"{title} [{relative_day}]"}}]}
         }
     )
 
