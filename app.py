@@ -29,25 +29,21 @@ def add_to_notion(title, time_str, system_type):
             "title": [{"text": {"content": title}}]
         },
         "系統別": {
-            "select": {"name": system_type}
+            "multi_select": [{"name": system_type}]
         }
     }
 
     # 判斷是「具體日期」還是「相對天數」
-    # 檢查字串中是否包含類似 2026-11-20 或 2026/11/20 的格式
     date_match = re.search(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', time_str)
     
     if date_match:
-        # 具體日期：標準化為 YYYY-MM-DD
         year, month, day = date_match.groups()
         formatted_date = f"{year}-{int(month):02d}-{int(day):02d}"
         
-        # 直接把日期寫進「預計完成日」
         properties["預計完成日"] = {
             "date": {"start": formatted_date}
         }
     else:
-        # 相對天數：抓取數字寫入相對天數欄位
         days = 0
         day_match = re.search(r'\d+', time_str)
         if day_match:
@@ -57,8 +53,6 @@ def add_to_notion(title, time_str, system_type):
             "number": days
         }
 
-        # 根據您的基準日 (例如 2026-10-25) 自動算出日期寫入預計完成日
-        # 若有需要，也可以讓 Notion 公式自行處理，這裡同時確保預計完成日有值
         base_date = datetime(2026, 10, 25)
         target_date = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
         properties["預計完成日"] = {
