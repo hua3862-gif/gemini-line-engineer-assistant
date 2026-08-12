@@ -18,10 +18,11 @@ MODEL_NAME = "gemini-2.5-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 def add_to_notion(title, relative_day):
+    """直接使用 Notion 系統預設的 title 屬性寫入，避開自訂中文名稱的對應錯誤"""
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
-            "項目名稱": {
+            "title": {
                 "title": [
                     {
                         "text": {
