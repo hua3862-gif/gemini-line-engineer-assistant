@@ -1,139 +1,120 @@
 import os
-import json
-import re
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from google import genai
-from notion_client import Client as NotionClient
-from datetime import datetime, timedelta
+from flask import Flask, abort, request
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage,
+)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
+import requests
 
 app = Flask(__name__)
 
-line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
-handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
-notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
-client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+# LINE Bot 設定
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
-MODEL_NAME = "gemini-2.5-flash"
-# 時程資料庫 ID
-PROGRESS_DB_ID = os.environ["PROGRESS_DB_ID"]
-# 報修資料庫 ID（從環境變數讀取原本的 NOTION_DATABASE_ID）
-REPAIR_DB_ID = os.environ.get("NOTION_DATABASE_ID", PROGRESS_DB_ID)
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 1. 處理時程寫入
-def add_progress_to_notion(title, time_str, system_type):
-    if not system_type or system_type.strip() == "":
-        system_type = "ALL"
+# Notion 設定與兩個資料庫 ID
+NOTION_TOKEN = os.getenv("NOTION_TOKEN")
+NOTION_DATABASE_ID = os.getenv(
+    "NOTION_DATABASE_ID"
+)  # 報修資料庫 (c779658d...)
+PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")  # 時程資料庫 (3bac8832...)
 
-    properties = {
-        "title": {
-            "title": [{"text": {"content": title}}]
+NOTION_VERSION = "2022-06-28"
+notion_headers = {
+    "Authorization": f"Bearer {NOTION_TOKEN}",
+    "Notion-Version": NOTION_VERSION,
+    "Content-Type": "application/json",
+}
+
+
+@app.route("/webhook", methods=["POST"])
+def callback():
+  signature = request.headers.get("X-Line-Signature", "")
+  body = request.get_data(as_text=True)
+  app.logger.info("Request body: " + body)
+
+  try:
+    handler.handle(body, data=body)
+  except InvalidSignatureError:
+    abort(400)
+  return "OK"
+
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+  text = event.message.text.strip()
+  reply_token = event.reply_token
+
+  response_message = "收到您的訊息！"
+
+  # 1. 處理「報修」相關指令（寫入上方報修資料庫）
+  # 支援「報修：」或「報修:」（不論全形半形）
+  if text.startswith("報修：") or text.startswith("報修:"):
+    content = text.split("：" if "：" in text else ":", 1)[1].strip()
+
+    # 組合 Notion 寫入 payload（根據您的報修資料庫屬性調整欄位名稱，例如 "標題" 或 "內容"）
+    notion_data = {
+        "parent": {"database_id": NOTION_DATABASE_ID},
+        "properties": {
+            "標題": {  # 請確認 Notion 報修資料庫的標題欄位名稱（通常為 title）
+                "title": [{"text": {"content": content}}]
+            }
         },
-        "系統別": {
-            "multi_select": [{"name": system_type}]
-        }
     }
 
-    date_match = re.search(r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', time_str)
-    if date_match:
-        year, month, day = date_match.groups()
-        formatted_date = f"{year}-{int(month):02d}-{int(day):02d}"
-        properties["預計完成日"] = {
-            "date": {"start": formatted_date}
-        }
+    res = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=notion_headers,
+        json=notion_data,
+    )
+    if res.status_code == 200:
+      response_message = f"✅ 已成功將報修內容記錄至【工程缺失管理資料庫】：\n{content}"
     else:
-        days = 0
-        day_match = re.search(r'\d+', time_str)
-        if day_match:
-            days = int(day_match.group())
+      response_message = f"❌ 報修記錄寫入失敗：{res.text}"
 
-        properties["相對天數(NTP+天)"] = {
-            "number": days
-        }
+  # 2. 處理「時程」相關指令（查詢或寫入下方時程資料庫）
+  elif text.startswith("時程：") or text.startswith("時程:"):
+    query_text = text.split("：" if "：" in text else ":", 1)[1].strip()
 
-        base_date = datetime(2026, 10, 25)
-        target_date = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
-        properties["預計完成日"] = {
-            "date": {"start": target_date}
-        }
+    # 示範：查詢時程資料庫中的工作項目
+    notion_query_url = (
+        f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
+    )
+    res = requests.post(notion_query_url, headers=notion_headers)
 
-    notion.pages.create(
-        parent={"database_id": PROGRESS_DB_ID},
-        properties=properties
+    if res.status_code == 200:
+      results = res.json().get("results", [])
+      response_message = (
+          f"📅【桃園棕線時程資料庫】查詢到 {len(results)} 項主要里程碑資料。"
+      )
+    else:
+      response_message = f"❌ 時程資料庫查詢失敗：{res.text}"
+
+  else:
+    response_message = (
+        "💡 提示：\n• 輸入「報修：[內容]」可寫入缺失資料庫。\n•"
+        " 輸入「時程：查詢」可讀取時程資料庫。"
     )
 
-# 2. 處理報修寫入
-def add_repair_to_notion(title):
-    notion.pages.create(
-        parent={"database_id": REPAIR_DB_ID},
-        properties={
-            "title": {
-                "title": [{"text": {"content": title}}]
-            }
-        }
+  # 回傳 LINE 訊息
+  with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+    line_bot_api.reply_message_with_http_info(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[TextMessage(text=response_message)],
+        )
     )
 
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    text = event.message.text
-    
-    # 處理時程
-    if text.startswith("時程："):
-        try:
-            response = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=f"請將此工程時程解析為 JSON 格式。請提取項目名稱為 title，將時間描述(如 NTP+45日 或 2026/11/20)提取為 remark，若有提到系統別(如 RST, PSY, COM, SCD, SIG, PSD, AFC)請提取為 system，若無則填入空字串: {text}"
-            )
-            content = response.text.replace("```json", "").replace("```", "").strip()
-            data = json.loads(content)
-            
-            if isinstance(data, list):
-                data = data[0] if len(data) > 0 else {}
-
-            title = data.get('title', '未命名事項')
-            time_str = data.get('remark', '無時間描述')
-            system_type = data.get('system', 'ALL')
-            
-            add_progress_to_notion(title, time_str, system_type)
-            
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"成功匯入時程 Notion!\n項目名稱: {title}\n系統別: {system_type or 'ALL'}\n時間資訊: {time_str}")
-            )
-        except Exception as e:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"處理失敗: {str(e)}")
-            )
-            
-    # 處理報修
-    elif text.startswith("報修："):
-        try:
-            repair_content = text.replace("報修：", "").strip()
-            add_repair_to_notion(repair_content)
-            
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"成功匯入報修 Notion!\n內容: {repair_content}")
-            )
-        except Exception as e:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"處理失敗: {str(e)}")
-            )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+  app.run(host="0.0.0.0", port=10000)
