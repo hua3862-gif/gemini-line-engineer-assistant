@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -15,20 +16,23 @@ notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 MODEL_NAME = "gemini-2.5-flash"
-DATABASE_ID = "3bac883295478081a1d6f1d6c24b6ce1"
-def add_to_notion(title, relative_day):
-    """直接使用 Notion 系統預設的 title 屬性寫入，避開自訂中文名稱的對應錯誤"""
+DATABASE_ID = os.environ["PROGRESS_DB_ID"]
+
+def add_to_notion(title, relative_day_str):
+    # 從字串中自動提取數字（例如從 "NTP+45日內" 抓出 45）
+    days = 0
+    match = re.search(r'\d+', relative_day_str)
+    if match:
+        days = int(match.group())
+
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
             "title": {
-                "title": [
-                    {
-                        "text": {
-                            "content": f"{title} ({relative_day})"
-                        }
-                    }
-                ]
+                "title": [{"text": {"content": title}}]
+            },
+            "相對天數(NTP+天)": {
+                "number": days
             }
         }
     )
