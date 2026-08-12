@@ -15,7 +15,7 @@ handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 
 # 使用新版 SDK 初始化
-client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 MODEL_NAME = "gemini-2.0-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
