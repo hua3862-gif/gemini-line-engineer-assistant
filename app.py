@@ -25,8 +25,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv(
     "NOTION_DATABASE_ID"
-)  # 報修資料庫 (c779658d...)
-PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")  # 時程資料庫 (3bac8832...)
+)  # 上方：工程缺失/報修資料庫
+PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")  # 下方：時程資料庫
 
 NOTION_VERSION = "2022-06-28"
 notion_headers = {
@@ -36,7 +36,8 @@ notion_headers = {
 }
 
 
-@app.route("/webhook", methods=["POST"])
+# 注意：路由必須與 LINE Developers 後台的 Webhook URL 結尾一致（這裡使用 /callback）
+@app.route("/callback", methods=["POST"])
 def callback():
   signature = request.headers.get("X-Line-Signature", "")
   body = request.get_data(as_text=True)
@@ -56,16 +57,14 @@ def handle_message(event):
 
   response_message = "收到您的訊息！"
 
-  # 1. 處理「報修」相關指令（寫入上方報修資料庫）
-  # 支援「報修：」或「報修:」（不論全形半形）
+  # 1. 處理「報修」指令（寫入上方報修資料庫）
   if text.startswith("報修：") or text.startswith("報修:"):
     content = text.split("：" if "：" in text else ":", 1)[1].strip()
 
-    # 組合 Notion 寫入 payload（根據您的報修資料庫屬性調整欄位名稱，例如 "標題" 或 "內容"）
     notion_data = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "標題": {  # 請確認 Notion 報修資料庫的標題欄位名稱（通常為 title）
+            "標題": {  # 請確認 Notion 報修資料庫的標題欄位名稱
                 "title": [{"text": {"content": content}}]
             }
         },
@@ -81,11 +80,10 @@ def handle_message(event):
     else:
       response_message = f"❌ 報修記錄寫入失敗：{res.text}"
 
-  # 2. 處理「時程」相關指令（查詢或寫入下方時程資料庫）
+  # 2. 處理「時程」指令（查詢下方時程資料庫）
   elif text.startswith("時程：") or text.startswith("時程:"):
     query_text = text.split("：" if "：" in text else ":", 1)[1].strip()
 
-    # 示範：查詢時程資料庫中的工作項目
     notion_query_url = (
         f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
     )
@@ -94,14 +92,14 @@ def handle_message(event):
     if res.status_code == 200:
       results = res.json().get("results", [])
       response_message = (
-          f"📅【桃園棕線時程資料庫】查詢到 {len(results)} 項主要里程碑資料。"
+          f"📅【桃園棕線時程資料庫】目前共有 {len(results)} 項主要里程碑資料。"
       )
     else:
       response_message = f"❌ 時程資料庫查詢失敗：{res.text}"
 
   else:
     response_message = (
-        "💡 提示：\n• 輸入「報修：[內容]」可寫入缺失資料庫。\n•"
+        "💡 機器人使用說明：\n• 輸入「報修：[內容]」可記錄至工程缺失資料庫。\n•"
         " 輸入「時程：查詢」可讀取時程資料庫。"
     )
 
