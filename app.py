@@ -36,15 +36,16 @@ notion_headers = {
 }
 
 
-# 注意：路由必須與 LINE Developers 後台的 Webhook URL 結尾一致（這裡使用 /callback）
 @app.route("/callback", methods=["POST"])
 def callback():
+  # 取得 LINE 簽章與內文
   signature = request.headers.get("X-Line-Signature", "")
   body = request.get_data(as_text=True)
   app.logger.info("Request body: " + body)
 
   try:
-    handler.handle(body, data=body)
+    # 修正處：傳入 body 與 signature 給 handler.handle
+    handler.handle(body, signature)
   except InvalidSignatureError:
     abort(400)
   return "OK"
