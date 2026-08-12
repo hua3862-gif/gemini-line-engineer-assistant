@@ -21,7 +21,7 @@ def add_to_notion(title, relative_day):
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
-            "Name": {
+            "項目名稱": {
                 "title": [
                     {
                         "text": {
