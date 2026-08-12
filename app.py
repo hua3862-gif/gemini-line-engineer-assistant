@@ -15,8 +15,7 @@ notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 MODEL_NAME = "gemini-2.5-flash"
-DATABASE_ID = os.environ["PROGRESS_DB_ID"]
-
+DATABASE_ID = "3bac883295478081a1d6f1d6c24b6ce1"
 def add_to_notion(title, relative_day):
     """直接使用 Notion 系統預設的 title 屬性寫入，避開自訂中文名稱的對應錯誤"""
     notion.pages.create(
