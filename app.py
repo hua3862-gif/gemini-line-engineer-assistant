@@ -18,12 +18,11 @@ MODEL_NAME = "gemini-2.5-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
 def add_to_notion(title, relative_day):
-    """直接對應 Notion 的 Title 屬性，不透過中文欄位名稱字串鎖死"""
+    """直接指定資料庫的第一個 Title 欄位屬性，避開名稱字串對應錯誤"""
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
-            # Notion API 的標準寫法：取得資料庫的第一個 Title 欄位
-            "項目名稱": {
+            "title": {  # 直接使用 API 的通用 title 屬性名稱
                 "title": [
                     {
                         "text": {
