@@ -9,21 +9,23 @@ from notion_client import Client as NotionClient
 
 app = Flask(__name__)
 
+# 初始化 API 客戶端
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
 notion = NotionClient(auth=os.environ["NOTION_TOKEN"])
 
+# 使用新版 SDK 初始化 Gemini
 client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 MODEL_NAME = "gemini-2.5-flash"
 DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
 
-def add_to_notion(title, date_info):
-    """將解析後的資料寫入對應的 Notion 欄位"""
+def add_to_notion(title, relative_day):
+    """將解析後的資料寫入 Notion，對應 '項目名稱' 與 '相對天數(NTP+天)' 欄位"""
     notion.pages.create(
         parent={"database_id": DATABASE_ID},
         properties={
             "項目名稱": {"title": [{"text": {"content": title}}]},
-            "預計完成日": {"date": {"start": date_info}}
+            "相對天數(NTP+天)": {"rich_text": [{"text": {"content": str(relative_day)}}]}
         }
     )
 
@@ -42,14 +44,15 @@ def handle_message(event):
     text = event.message.text
     if text.startswith("時程："):
         try:
+            # 讓 AI 解析出 title 與相對天數/時間描述 (remark)
             response = client.models.generate_content(
                 model=MODEL_NAME,
-                contents=f"請將此工程時程解析為 JSON 物件格式 (包含欄位 title 和 date，其中 date 請輸出 YYYY-MM-DD 或相對日期描述): {text}"
+                contents=f"請將此工程時程解析為 JSON 物件格式。提取項目名稱為 title，並將時間或相對天數描述(如NTP+45日)提取為 remark: {text}"
             )
             content = response.text.replace("```json", "").replace("```", "").strip()
             data = json.loads(content)
             
-            # 防呆：若 AI 回傳 List 則自動取第一筆
+            # 防呆處理：若 AI 回傳 List 則自動取第一筆
             if isinstance(data, list):
                 if len(data) > 0:
                     data = data[0]
@@ -57,13 +60,14 @@ def handle_message(event):
                     raise ValueError("AI 回傳的 JSON 列表為空")
 
             title = data.get('title', '未命名事項')
-            date_info = data.get('date', '2026-12-31')
+            relative_day = data.get('remark', '未指定天數')
             
-            add_to_notion(title, date_info)
+            # 寫入 Notion
+            add_to_notion(title, relative_day)
             
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text=f"成功匯入 Notion!\n項目名稱: {title}\n預計完成日: {date_info}")
+                TextSendMessage(text=f"成功匯入 Notion!\n項目名稱: {title}\n相對天數: {relative_day}")
             )
         except Exception as e:
             line_bot_api.reply_message(
