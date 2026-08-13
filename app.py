@@ -103,7 +103,7 @@ def handle_message(event):
         "缺失項目": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
         "嚴重程度": {"select": {"name": str(severity_val)}},
         "日期": {"date": {"start": str(date_val)}},
-        "狀態": {"select": {"name": str(status_val)}},
+        "狀態": {"select": {"name": str(status_val)}},  # 修正為 select 結構
     }
 
     if parsed_data.get("station"):
@@ -169,7 +169,7 @@ def handle_message(event):
 
     properties = {
         "title": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
-        "系統別": {"multi_select": [{"name": str(sys_val)}]},  # 配合 multi_select 型態
+        "系統別": {"multi_select": [{"name": str(sys_val)}]},
     }
 
     if parsed_data.get("relative_days") is not None:
