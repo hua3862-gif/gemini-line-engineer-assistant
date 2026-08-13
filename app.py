@@ -67,12 +67,12 @@ def handle_message(event):
 
     prompt = f"""
     請智慧分析以下工程報修文字，並精準拆解為以下欄位，以 JSON 格式回傳：
-    - title: 缺失項目主旨（必填，請去除站別與位置後的實際問題描述，例如 "天花板漏水"）
+    - title: 缺失項目主旨（必填，請去除站別與位置後的實際問題描述）
     - severity: 嚴重程度 (例如：高、中、低、待評估，若文字未提及請填 "待評估")
     - date: 日期 (請將文字中的日期轉為 YYYY-MM-DD 格式，若未提及則填 "TODAY")
     - status: 狀態 (例如：未開始、進行中、已完成、延遲，若未提及請填 "未開始")
     - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K6, K7, K9 等，若無則填 null)
-    - location: 位置細節 (例如：現金房、機房、月台、天花板等詳細位置，若無則填 null)
+    - location: 位置細節 (例如：現金房、機房、月台等詳細位置，若無則填 null)
 
     報修文字：{content}
     請僅回傳 JSON 格式字串，不要包含 markdown 標籤或額外文字。
@@ -137,6 +137,7 @@ def handle_message(event):
     請智慧分析以下工程時程文字，並以 JSON 格式回傳以下欄位：
     - title: 工作項目名稱（必填）
     - system: 系統別 (若無法分辨或未提及，請務必填 "ALL"，可選值包含 ALL, RST, PSY, COM, SCD, SIG, PSD, AFC)
+    - progress: 進度狀態 (例如：未開始、進行中、已完成、延遲，若未提及請填 "未開始")
     - relative_days: 相對天數數字 (例如 NTP+45 則填 45，若無則填 null)
     - contract_date: 契約規定完成日期 (格式 YYYY-MM-DD，若無則填 null)
     - target_date: 預定完成日/臨時性需求日期 (格式 YYYY-MM-DD，若無則填 null)
@@ -156,16 +157,15 @@ def handle_message(event):
       parsed_data = {
           "title": content,
           "system": "ALL",
+          "progress": "未開始",
           "relative_days": None,
           "contract_date": None,
           "target_date": None,
           "remark": None,
       }
 
-    sys_val = parsed_data.get("system")
-    if not sys_val:
-      sys_val = "ALL"
-
+    sys_val = parsed_data.get("system") or "ALL"
+    progress_val = parsed_data.get("progress") or "未開始"
     contract_d = parsed_data.get("contract_date")
     target_d = parsed_data.get("target_date")
 
@@ -175,6 +175,7 @@ def handle_message(event):
     properties = {
         "title": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
         "系統別": {"multi_select": [{"name": str(sys_val)}]},
+        "進度/狀態": {"select": {"name": str(progress_val)}},
     }
 
     if parsed_data.get("relative_days") is not None:
@@ -194,7 +195,10 @@ def handle_message(event):
         json=notion_data,
     )
     if res.status_code == 200:
-      response_message = f"✅ 已成功新增至【時程資料庫】:\n• 項目：{content}\n• 系統別：{sys_val}"
+      response_message = (
+          f"✅ 已成功新增至【時程資料庫】:\n• 項目：{content}\n• 系統別：{sys_val}\n•"
+          f" 進度：{progress_val}"
+      )
     else:
       response_message = f"❌ 時程新增失敗：{res.text}"
 
