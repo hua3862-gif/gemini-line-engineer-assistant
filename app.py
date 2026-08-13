@@ -72,6 +72,7 @@ def handle_message(event):
     - date: 日期 (請將文字中的日期轉為 YYYY-MM-DD 格式，若未提及則填 "TODAY")
     - status: 狀態 (例如：未開始、進行中、已完成、延遲，若未提及請填 "未開始")
     - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K6, K7, A站 等，若無則填 null)
+    - location: 位置細節 (例如：機房、月台、天花板、空調箱等文字描述，若無則填 null)
 
     報修文字：{content}
     請僅回傳 JSON 格式字串，不要包含 markdown 標籤或額外文字。
@@ -90,6 +91,7 @@ def handle_message(event):
           "date": "TODAY",
           "status": "未開始",
           "station": None,
+          "location": None,
       }
 
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -103,11 +105,13 @@ def handle_message(event):
         "缺失項目": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
         "嚴重程度": {"select": {"name": str(severity_val)}},
         "日期": {"date": {"start": str(date_val)}},
-        "狀態": {"select": {"name": str(status_val)}},  # 修正為 select 結構
+        "狀態": {"select": {"name": str(status_val)}},
     }
 
     if parsed_data.get("station"):
       properties["站別"] = {"select": {"name": str(parsed_data["station"])}}
+    if parsed_data.get("location"):
+      properties["位置"] = {"rich_text": [{"text": {"content": str(parsed_data["location"])}}]}
 
     notion_data = {"parent": {"database_id": NOTION_DATABASE_ID}, "properties": properties}
 
