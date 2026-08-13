@@ -66,13 +66,13 @@ def handle_message(event):
     content = text.split("：" if "：" in text else ":", 1)[1].strip()
 
     prompt = f"""
-    請智慧分析以下工程報修文字，並以 JSON 格式回傳以下欄位：
-    - title: 缺失項目主旨（必填）
+    請智慧分析以下工程報修文字，並精準拆解為以下欄位，以 JSON 格式回傳：
+    - title: 缺失項目主旨（必填，請去除站別與位置後的實際問題描述，例如 "天花板漏水"）
     - severity: 嚴重程度 (例如：高、中、低、待評估，若文字未提及請填 "待評估")
     - date: 日期 (請將文字中的日期轉為 YYYY-MM-DD 格式，若未提及則填 "TODAY")
     - status: 狀態 (例如：未開始、進行中、已完成、延遲，若未提及請填 "未開始")
-    - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K6, K7, A站 等，若無則填 null)
-    - location: 位置細節 (例如：機房、月台、天花板、空調箱等文字描述，若無則填 null)
+    - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K6, K7, K9 等，若無則填 null)
+    - location: 位置細節 (例如：現金房、機房、月台、天花板等詳細位置，若無則填 null)
 
     報修文字：{content}
     請僅回傳 JSON 格式字串，不要包含 markdown 標籤或額外文字。
@@ -122,8 +122,9 @@ def handle_message(event):
     )
     if res.status_code == 200:
       response_message = (
-          f"✅ 已成功寫入【工程缺失管理】:\n• 項目：{content}\n• 嚴重程度：{severity_val}\n•"
-          f" 日期：{date_val}\n• 狀態：{status_val}"
+          f"✅ 已成功寫入【工程缺失管理】:\n• 項目：{parsed_data.get('title', content)}\n• 站別："
+          f"{parsed_data.get('station', '無')}\n• 位置：{parsed_data.get('location', '無')}\n• 狀態："
+          f"{status_val}"
       )
     else:
       response_message = f"❌ 寫入失敗：{res.text}"
