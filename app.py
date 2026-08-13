@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import os
 from flask import Flask, abort, request
@@ -67,10 +68,10 @@ def handle_message(event):
     prompt = f"""
     請智慧分析以下工程報修文字，並以 JSON 格式回傳以下欄位：
     - title: 缺失項目主旨（必填）
-    - severity: 嚴重程度 (例如：高、中、低、待評估，若有提到相關程度請務必萃取，若完全無則填 null)
-    - date: 日期 (請將文字中的日期轉為 YYYY-MM-DD 格式，若無則填 null)
-    - status: 狀態 (例如：未開始、進行中、已完成、延遲，若無則填 null)
-    - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K7, K6, A站 等，若無則填 null)
+    - severity: 嚴重程度 (例如：高、中、低、待評估，若文字未提及請填 "待評估")
+    - date: 日期 (請將文字中的日期轉為 YYYY-MM-DD 格式，若未提及則填 "TODAY")
+    - status: 狀態 (例如：未開始、進行中、已完成、延遲，若未提及請填 "未開始")
+    - station: 站別 (請智慧辨識並統一轉為標準格式，例如：K6, K7, A站 等，若無則填 null)
 
     報修文字：{content}
     請僅回傳 JSON 格式字串，不要包含 markdown 標籤或額外文字。
@@ -85,22 +86,26 @@ def handle_message(event):
     except Exception as e:
       parsed_data = {
           "title": content,
-          "severity": None,
-          "date": None,
-          "status": None,
+          "severity": "待評估",
+          "date": "TODAY",
+          "status": "未開始",
           "station": None,
       }
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    severity_val = parsed_data.get("severity") or "待評估"
+    date_val = parsed_data.get("date")
+    if not date_val or date_val == "TODAY":
+      date_val = today_str
+    status_val = parsed_data.get("status") or "未開始"
+
     properties = {
-        "缺失項目": {"title": [{"text": {"content": parsed_data.get("title", content)}}]}
+        "缺失項目": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
+        "嚴重程度": {"select": {"name": str(severity_val)}},
+        "日期": {"date": {"start": str(date_val)}},
+        "狀態": {"select": {"name": str(status_val)}},
     }
-    
-    if parsed_data.get("severity"):
-      properties["嚴重程度"] = {"select": {"name": str(parsed_data["severity"])}}
-    if parsed_data.get("date"):
-      properties["日期"] = {"date": {"start": str(parsed_data["date"])}}
-    if parsed_data.get("status"):
-      properties["狀態"] = {"select": {"name": str(parsed_data["status"])}}
+
     if parsed_data.get("station"):
       properties["站別"] = {"select": {"name": str(parsed_data["station"])}}
 
@@ -112,7 +117,10 @@ def handle_message(event):
         json=notion_data,
     )
     if res.status_code == 200:
-      response_message = f"✅ 已成功智慧解析並寫入【工程缺失管理】:\n• 內容：{content}\n• AI 已自動填入對應欄位！"
+      response_message = (
+          f"✅ 已成功寫入【工程缺失管理】:\n• 項目：{content}\n• 嚴重程度：{severity_val}\n•"
+          f" 日期：{date_val}\n• 狀態：{status_val}"
+      )
     else:
       response_message = f"❌ 寫入失敗：{res.text}"
 
@@ -156,14 +164,13 @@ def handle_message(event):
     contract_d = parsed_data.get("contract_date")
     target_d = parsed_data.get("target_date")
 
-    # 若契約規定完成日有日期，且無臨時性需求指定的預定完成日，則將契約規定完成日複製到預計完成日管控
     if contract_d and not target_d:
       target_d = contract_d
 
     properties = {
-        "title": {"title": [{"text": {"content": parsed_data.get("title", content)}}]}
+        "title": {"title": [{"text": {"content": parsed_data.get("title", content)}}]},
+        "系統別": {"multi_select": [{"name": str(sys_val)}]},  # 配合 multi_select 型態
     }
-    properties["系統別"] = {"select": {"name": str(sys_val)}}
 
     if parsed_data.get("relative_days") is not None:
       properties["相對天數(NTP+天)"] = {"number": int(parsed_data["relative_days"])}
