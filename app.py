@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from flask import Flask, abort, request
@@ -9,10 +9,12 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
+    PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
+import pandas as pd
 import requests
 
 app = Flask(__name__)
@@ -215,6 +217,154 @@ def handle_message(event):
             messages=[TextMessage(text=response_message)],
         )
     )
+
+
+# 3. 智慧多階段告警路由 (配合您要求的各個時間點)
+@app.route("/check-schedule", methods=["GET"])
+def check_schedule():
+  ALERT_GROUP_ID = "C5c0b9ad86a00149bb16b5db6a8d0b622"
+  today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+  # 從 Notion 讀取時程資料庫所有頁面
+  url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
+  all_pages = []
+  has_more = True
+  start_cursor = None
+
+  while has_more:
+    payload = {}
+    if start_cursor:
+      payload["start_cursor"] = start_cursor
+    res = requests.post(url, headers=notion_headers, json=payload)
+    if res.status_code != 200:
+      return f"Error querying Notion: {res.text}", 500
+    data = res.json()
+    all_pages.extend(data.get("results", []))
+    has_more = data.get("has_more", False)
+    start_cursor = data.get("next_cursor")
+
+  # 解析資料
+  tasks = []
+  for page in all_pages:
+    props = page.get("properties", {})
+    # 取得標題
+    title_list = props.get("title", {}).get("title", [])
+    title = title_list[0].get("text", {}).get("content", "無標題") if title_list else "無標題"
+
+    # 取得狀態
+    status_obj = props.get("進度/狀態", {}).get("select")
+    status = status_obj.get("name") if status_obj else "未開始"
+
+    # 若已完成則跳過告警
+    if status == "已完成":
+      continue
+
+    # 取得預計完成日
+    date_obj = props.get("預計完成日", {}).get("date")
+    due_date_str = date_obj.get("start") if date_obj else None
+
+    if due_date_str:
+      due_date = datetime.strptime(due_date_str[:10], "%Y-%m-%d")
+      diff_days = (due_date - today).days  # 負數代表已逾期，正數代表距離到期還有幾天
+
+      tasks.append({"title": title, "status": status, "due_date": due_date_str, "diff_days": diff_days})
+
+  # 分類告警群組
+  # 到期前1周: diff_days == 7
+  # 到期前1日: diff_days == 1
+  # 當日: diff_days == 0
+  # 到期後3日: diff_days == -3
+  # 到期後1周: diff_days == -7
+  # 到期後2周: diff_days == -14
+  # 到期後每月 (滿 30 天的倍數，例如 -30, -60, -90...)
+
+  alerts = {"before_7": [], "before_1": [], "today": [], "after_3": [], "after_7": [], "after_14": [], "after_monthly": []}
+
+  for t in tasks:
+    d = t["diff_days"]
+    if d == 7:
+      alerts["before_7"].append(t)
+    elif d == 1:
+      alerts["before_1"].append(t)
+    elif d == 0:
+      alerts["today"].append(t)
+    elif d == -3:
+      alerts["after_3"].append(t)
+    elif d == -7:
+      alerts["after_7"].append(t)
+    elif d == -14:
+      alerts["after_14"].append(t)
+    elif d < 0 and abs(d) % 30 == 0:
+      alerts["after_monthly"].append(t)
+
+  # 組裝訊息
+  msg_lines = ["📢 【桃園棕線時程進度自動告警】\n"]
+  has_alert = False
+
+  if alerts["before_7"]:
+    has_alert = True
+    msg_lines.append("⏳ 【將屆：剩餘 1 週】")
+    for t in alerts["before_7"]:
+      msg_lines.append(f"• {t['title']} (預定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["before_1"]:
+    has_alert = True
+    msg_lines.append("⚠️ 【將屆：剩餘 1 天】")
+    for t in alerts["before_1"]:
+      msg_lines.append(f"• {t['title']} (預定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["today"]:
+    has_alert = True
+    msg_lines.append("🚨 【今日到期】")
+    for t in alerts["today"]:
+      msg_lines.append(f"• {t['title']} (預定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["after_3"]:
+    has_alert = True
+    msg_lines.append("❌ 【已逾期 3 天】")
+    for t in alerts["after_3"]:
+      msg_lines.append(f"• {t['title']} (原定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["after_7"]:
+    has_alert = True
+    msg_lines.append("❌ 【已逾期 1 週】")
+    for t in alerts["after_7"]:
+      msg_lines.append(f"• {t['title']} (原定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["after_14"]:
+    has_alert = True
+    msg_lines.append("❌ 【已逾期 2 週】")
+    for t in alerts["after_14"]:
+      msg_lines.append(f"• {t['title']} (原定：{t['due_date']})")
+    msg_lines.append("")
+
+  if alerts["after_monthly"]:
+    has_alert = True
+    msg_lines.append("❗ 【長期逾期提醒 (滿月倍數)】")
+    for t in alerts["after_monthly"]:
+      msg_lines.append(f"• {t['title']} (原定：{t['due_date']}, 已逾期 {abs(t['diff_days'])} 天)")
+    msg_lines.append("")
+
+  if not has_alert:
+    return "No schedule alerts for today."
+
+  final_msg = "\n".join(msg_lines)
+
+  # 推播至指定群組
+  with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+    line_bot_api.push_message(
+        PushMessageRequest(
+            to=ALERT_GROUP_ID, messages=[TextMessage(text=final_msg)]
+        )
+    )
+
+  return "Schedule alerts sent successfully."
 
 
 if __name__ == "__main__":
