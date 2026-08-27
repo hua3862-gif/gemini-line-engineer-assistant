@@ -1,0 +1,32 @@
+name: Daily Schedule Alert
+
+on:
+  schedule:
+    # 每天早上 0:00 UTC 執行 (等於台灣時間早上 8:00)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 讓您可以隨時在 GitHub 網頁手動按鈕測試
+
+jobs:
+  run-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install requests line-bot-sdk
+
+      - name: Run Alert Script
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          PROGRESS_DB_ID: ${{ secrets.PROGRESS_DB_ID }}
+          ALERT_GROUP_ID: ${{ secrets.ALERT_GROUP_ID }}
+        run: |
+          python check_alert.py
