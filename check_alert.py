@@ -49,17 +49,22 @@ def run_daily_alert():
   tasks = []
   for page in all_pages:
     props = page.get("properties", {})
-    title = (
-        props.get("title", {})
-        .get("title", [{}])[0]
-        .get("text", {})
-        .get("content", "無標題")
-    )
+
+    # 安全地取得標題（自動掃描 Notion 中的 title 欄位）
+    title = "無標題"
+    for prop_name, prop_val in props.items():
+      if prop_val.get("type") == "title":
+        title_array = prop_val.get("title", [])
+        if title_array:
+          title = title_array[0].get("text", {}).get("content", "無標題")
+        break
+
+    # 檢查進度狀態，若已完成則跳過
     status = props.get("進度/狀態", {}).get("select", {}).get("name", "未開始")
     if status == "已完成":
       continue
 
-    # 取得雙日期（契約日與預計日），取較早者
+    # 取得雙日期（契約規定完成日與預計完成日），取較早者
     c_date = props.get("契約規定完成日", {}).get("date", {}).get("start")
     t_date = props.get("預計完成日", {}).get("date", {}).get("start")
 
@@ -78,7 +83,7 @@ def run_daily_alert():
           "diff_days": diff_days,
       })
 
-  # 分類告警
+  # 分類告警（七階段）
   alerts = {
       "before_7": [],
       "before_1": [],
@@ -105,7 +110,7 @@ def run_daily_alert():
     elif d < 0 and abs(d) % 30 == 0:
       alerts["after_monthly"].append(t)
 
-  # 組裝訊息
+  # 組裝 LINE 告警訊息
   msg_lines = ["📢 【工程時程進度自動告警】"]
   labels = [
       ("before_7", "⏳ 剩餘 1 週"),
