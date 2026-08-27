@@ -1,6 +1,5 @@
 from datetime import datetime
 import os
-from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
@@ -10,11 +9,13 @@ from linebot.v3.messaging import (
 )
 import requests
 
-# 讀取環境變數
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID")
+# 強制指定時程期限通知群組 ID
+ALERT_GROUP_ID = os.getenv(
+    "ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622"
+)
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 
@@ -29,7 +30,6 @@ def run_daily_alert():
   today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
   print(f"[{today.strftime('%Y-%m-%d')}] 開始執行工程時程自動檢查...")
 
-  # 查詢 Notion 資料庫
   url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
   all_pages = []
   has_more = True
@@ -50,7 +50,7 @@ def run_daily_alert():
   for page in all_pages:
     props = page.get("properties", {})
 
-    # 安全地取得標題（自動掃描 Notion 中的 title 欄位）
+    # 1. 安全取得標題
     title = "無標題"
     for prop_name, prop_val in props.items():
       if prop_val.get("type") == "title":
@@ -59,14 +59,28 @@ def run_daily_alert():
           title = title_array[0].get("text", {}).get("content", "無標題")
         break
 
-    # 檢查進度狀態，若已完成則跳過
-    status = props.get("進度/狀態", {}).get("select", {}).get("name", "未開始")
+    # 2. 檢查狀態
+    status = "未開始"
+    for key in ["進度/狀態", "進度狀態", "狀態"]:
+      if key in props:
+        status = (
+            props.get(key, {}).get("select", {}).get("name", "未開始")
+        ) or "未開始"
+        break
+
     if status == "已完成":
       continue
 
-    # 取得雙日期（契約規定完成日與預計完成日），取較早者
-    c_date = props.get("契約規定完成日", {}).get("date", {}).get("start")
-    t_date = props.get("預計完成日", {}).get("date", {}).get("start")
+    # 3. 取得雙日期（契約規定日與預計完工日）
+    c_date, t_date = None, None
+    for key in ["契約規定完成日", "契約完成日"]:
+      if key in props:
+        c_date = props.get(key, {}).get("date", {}).get("start")
+        break
+    for key in ["預計完成日", "預計完工日"]:
+      if key in props:
+        t_date = props.get(key, {}).get("date", {}).get("start")
+        break
 
     dates = []
     if c_date:
@@ -110,7 +124,6 @@ def run_daily_alert():
     elif d < 0 and abs(d) % 30 == 0:
       alerts["after_monthly"].append(t)
 
-  # 組裝 LINE 告警訊息
   msg_lines = ["📢 【工程時程進度自動告警】"]
   labels = [
       ("before_7", "⏳ 剩餘 1 週"),
@@ -134,14 +147,14 @@ def run_daily_alert():
     print("目前沒有符合條件的告警項目。")
     return
 
-  # 發送 LINE 訊息
+  # 發送到專屬的時程通知群組
   with ApiClient(configuration) as api_client:
     MessagingApi(api_client).push_message(
         PushMessageRequest(
             to=ALERT_GROUP_ID, messages=[TextMessage(text="\n".join(msg_lines))]
         )
     )
-  print("LINE 告警訊息已成功發送！")
+  print("LINE 告警訊息已成功發送至期限通知群組！")
 
 
 if __name__ == "__main__":
