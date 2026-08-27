@@ -12,7 +12,6 @@ import requests
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-# 強制指定時程期限通知群組 ID
 ALERT_GROUP_ID = os.getenv(
     "ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622"
 )
@@ -29,6 +28,7 @@ notion_headers = {
 def run_daily_alert():
   today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
   print(f"[{today.strftime('%Y-%m-%d')}] 開始執行工程時程自動檢查...")
+  print(f"目標 LINE 群組 ID: {ALERT_GROUP_ID}")
 
   url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
   all_pages = []
@@ -46,11 +46,13 @@ def run_daily_alert():
     has_more = data.get("has_more", False)
     start_cursor = data.get("next_cursor")
 
+  print(f"總共從 Notion 撈取到 {len(all_pages)} 筆頁面。")
+
   tasks = []
   for page in all_pages:
     props = page.get("properties", {})
 
-    # 1. 安全取得標題
+    # 1. 抓取標題
     title = "無標題"
     for prop_name, prop_val in props.items():
       if prop_val.get("type") == "title":
@@ -59,19 +61,22 @@ def run_daily_alert():
           title = title_array[0].get("text", {}).get("content", "無標題")
         break
 
-    # 2. 檢查狀態
+    # 2. 抓取狀態（相容多種欄位名稱）
     status = "未開始"
-    for key in ["進度/狀態", "進度狀態", "狀態"]:
+    for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
       if key in props:
         status = (
             props.get(key, {}).get("select", {}).get("name", "未開始")
         ) or "未開始"
         break
 
+    print(f"檢查任務: 【{title}】 | 狀態: {status}")
+
     if status == "已完成":
+      print(f"  -> 已完成，略過。")
       continue
 
-    # 3. 取得雙日期（契約規定日與預計完工日）
+    # 3. 抓取日期
     c_date, t_date = None, None
     for key in ["契約規定完成日", "契約完成日"]:
       if key in props:
@@ -91,13 +96,19 @@ def run_daily_alert():
     if dates:
       due_date = min(dates)
       diff_days = (due_date - today).days
+      print(
+          f"  -> 有效期限: {due_date.strftime('%Y-%m-%d')} | 距離今天天數:"
+          f" {diff_days} 天"
+      )
       tasks.append({
           "title": title,
           "due_date": due_date.strftime("%Y-%m-%d"),
           "diff_days": diff_days,
       })
+    else:
+      print(f"  -> 找不到有效日期，略過。")
 
-  # 分類告警（七階段）
+  # 分類告警
   alerts = {
       "before_7": [],
       "before_1": [],
@@ -144,17 +155,17 @@ def run_daily_alert():
         msg_lines.append(f"• {t['title']} ({t['due_date']})")
 
   if not has_alert:
-    print("目前沒有符合條件的告警項目。")
+    print("目前沒有符合條件的告警項目（天數不符合 0, 1, 7 或逾期指定天數）。")
     return
 
-  # 發送到專屬的時程通知群組
+  print("準備發送 LINE 訊息...")
   with ApiClient(configuration) as api_client:
-    MessagingApi(api_client).push_message(
+    res = MessagingApi(api_client).push_message(
         PushMessageRequest(
             to=ALERT_GROUP_ID, messages=[TextMessage(text="\n".join(msg_lines))]
         )
     )
-  print("LINE 告警訊息已成功發送至期限通知群組！")
+  print("LINE 告警訊息已成功發送！")
 
 
 if __name__ == "__main__":
