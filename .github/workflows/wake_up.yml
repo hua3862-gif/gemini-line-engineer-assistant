@@ -13,5 +13,5 @@ jobs:
     steps:
       - name: Ping the bot
         run: |
-          # 向您的 Render 專案發送 GET 請求，觸發 /ping 路由
-          curl -f https://gemini-line-engineer-assistant.onrender.com/ping
+          # 向您的新 Render 專案發送 GET 請求
+          curl -f https://gemini-line-engineer-assistant-j1j0.onrender.com/
