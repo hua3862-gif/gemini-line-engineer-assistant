@@ -56,19 +56,22 @@ def handle_message(event):
     text = event.message.text.strip()
     reply_token = event.reply_token
     
-    # 範例：如果您未來需要將報修或特定指令推送到報修群組 (REPAIR_GROUP_ID)，
-    # 可以使用以下的寫法透過 ApiClient 發送主動訊息：
-    # with ApiClient(configuration) as api_client:
-    #     MessagingApi(api_client).push_message(
-    #         PushMessageRequest(to=REPAIR_GROUP_ID, messages=[TextMessage(text=f"收到報修訊息: {text}")])
-    #     )
-    
-    # 目前保持基本的回覆邏輯
+    # 如果使用者在群組打「ID」，自動回報本群組的 ID
+    if text.upper() == "ID":
+        group_id = "此聊天室不是群組"
+        if hasattr(event.source, "group_id") and event.source.group_id:
+            group_id = event.source.group_id
+        elif hasattr(event.source, "room_id") and event.source.room_id:
+            group_id = event.source.room_id
+        response_text = f"📌 本群組 ID :\n{group_id}"
+    else:
+        response_text = f"已收到您的訊息：{text}"
+
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=reply_token,
-                messages=[TextMessage(text=f"已收到您的訊息：{text}")]
+                messages=[TextMessage(text=response_text)]
             )
         )
 
