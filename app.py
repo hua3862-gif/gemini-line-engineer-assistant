@@ -26,7 +26,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID") # 主資料庫 ID
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-# 新增：收發文歷程明細資料庫 ID (請在環境變數設定或直接貼上)
+# 新增：收發文歷程明細資料庫 ID
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_DATABASE_ID) 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -70,7 +70,6 @@ def handle_text_message(event):
             group_id = event.source.room_id
         response_text = f"📌 本群組 ID :\n{group_id}"
     else:
-        # 也可以讓使用者直接貼上「公文文字摘要」讓 AI 解析
         response_text = process_document_with_ai(text, is_image=False)
 
     with ApiClient(configuration) as api_client:
@@ -138,8 +137,7 @@ def process_document_with_ai(content, is_image=False):
         raw_text = response.text.replace("```json", "").replace("```", "").strip()
         doc_data = json.loads(raw_text)
         
-        # 準備寫入 Notion 「收發文歷程明細」資料庫
-        notion_url = "https://api.com/v1/pages" if False else "https://api.notion.com/v1/pages" # 修正網址
+        notion_url = "https://api.notion.com/v1/pages"
         
         payload = {
             "parent": {"database_id": REPLY_DB_ID},
@@ -175,9 +173,9 @@ def process_document_with_ai(content, is_image=False):
             return f"⚠️ AI 解析成功，但寫入 Notion 失敗：{res.text}"
             
     except Exception as e:
-        return f"❌ 解析或建檔發生錯誤：str({e})"
+        return f"❌ 解析或建檔發生錯誤：{str(e)}"
 
-# ----------------- 每日時程自動檢查路由 (保留您原本的邏輯) -----------------
+# ----------------- 每日時程自動檢查路由 (含已發文取消告警機制) -----------------
 @app.route("/check-schedule", methods=["GET"])
 def check_schedule():
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -201,6 +199,7 @@ def check_schedule():
     for page in all_pages:
         props = page.get("properties", {})
         
+        # 1. 取得任務名稱
         title = "無標題"
         for prop_name, prop_val in props.items():
             if prop_val.get("type") == "title":
@@ -209,6 +208,7 @@ def check_schedule():
                     title = title_array[0].get("text", {}).get("content", "無標題")
                 break
 
+        # 2. 檢查狀態，若已完成則略過
         status = "未開始"
         for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
             if key in props:
@@ -218,14 +218,44 @@ def check_schedule():
         if status == "已完成": 
             continue
 
+        # 3. 【防呆機制】檢查是否有關聯「發文」記錄，有則直接取消/略過告警
+        has_sent_document = False
+        related_docs = props.get("相關收發文歷程", {}).get("relation", [])
+        for doc in related_docs:
+            doc_id = doc["id"]
+            try:
+                doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
+                if doc_page_res.status_code == 200:
+                    doc_props = doc_page_res.json().get("properties", {})
+                    doc_type = doc_props.get("收/發文", {}).get("select", {}).get("name", "")
+                    if doc_type == "發文":
+                        has_sent_document = True
+                        break
+            except Exception:
+                pass
+
+        if has_sent_document:
+            print(f"【已提送 - 取消告警】任務「{title}」已有對應的發文記錄。")
+            continue
+
+        # 4. 取得完成日 (支援公式欄位或日期欄位計算)
         c_date, t_date = None, None
         for key in ["契約規定完成日", "契約完成日"]:
             if key in props:
-                c_date = props.get(key, {}).get("date", {}).get("start")
+                p_type = props.get(key, {}).get("type")
+                if p_type == "date":
+                    c_date = props.get(key, {}).get("date", {}).get("start")
+                elif p_type == "formula":
+                    c_date = props.get(key, {}).get("formula", {}).get("date", {}).get("start")
                 break
+                
         for key in ["預計完成日", "預計完工日"]:
             if key in props:
-                t_date = props.get(key, {}).get("date", {}).get("start")
+                p_type = props.get(key, {}).get("type")
+                if p_type == "date":
+                    t_date = props.get(key, {}).get("date", {}).get("start")
+                elif p_type == "formula":
+                    t_date = props.get(key, {}).get("formula", {}).get("date", {}).get("start")
                 break
         
         dates = []
