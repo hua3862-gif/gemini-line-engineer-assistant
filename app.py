@@ -3,7 +3,7 @@ import json
 import os
 from flask import Flask, abort, request
 from google import genai
-from google.genai import types # 用於處理圖片格式
+from google.genai import types  # 用於處理圖片格式
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -327,33 +327,6 @@ def check_schedule():
             )
         )
     return "OK"
-# ----------------- 每日時程自動檢查路由 -----------------
-@app.route("/check-schedule", methods=["GET"])
-def check_schedule():
-    try:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        url = f"https://api.notion.v1/databases/{PROGRESS_DB_ID}/query"
-        payload = {
-            "filter": {
-                "property": "日期", # 請確認您的 Notion 欄位名稱是否正確
-                "date": {
-                    "equals": today_str
-                }
-            }
-        }
-        
-        res = requests.post(url, headers=notion_headers, json=payload)
-        if res.status_code != 200:
-            return f"Notion API 查詢失敗: {res.text}", 500
-            
-        data = res.json().get("results", [])
-        if not data:
-            return "No alerts. (今日無特定排程)"
-            
-        return f"Found {len(data)} items for today!"
-        
-    except Exception as e:
-        return f"Error: {str(e)}", 500
-        
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
