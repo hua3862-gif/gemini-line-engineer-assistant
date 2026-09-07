@@ -44,7 +44,11 @@ notion_headers = {
     "Content-Type": "application/json",
 }
 
-# ----------------- LINE Webhook 接收點 -----------------
+# ----------------- 根目錄與 LINE Webhook 接收點 -----------------
+@app.route("/", methods=["GET"])
+def home():
+    return "Gemini LINE Engineer Assistant is running!"
+
 @app.route("/callback", methods=["POST"])
 def callback():
     signature = request.headers.get("X-Line-Signature", "")
