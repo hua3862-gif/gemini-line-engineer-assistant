@@ -27,6 +27,7 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           PROGRESS_DB_ID: ${{ secrets.PROGRESS_DB_ID }}
+          REPLY_DB_ID: ${{ secrets.REPLY_DB_ID }}
           ALERT_GROUP_ID: ${{ secrets.ALERT_GROUP_ID }}
         run: |
           python check_alert.py
