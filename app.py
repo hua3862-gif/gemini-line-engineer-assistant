@@ -179,7 +179,7 @@ def process_document_with_ai(content, is_image=False):
     except Exception as e:
         return f"❌ 解析或建檔發生錯誤：{str(e)}"
 
-# ----------------- 每日時程自動檢查路由 (含已辦結/後續辦理文取消告警機制) -----------------
+# ----------------- 每日時程自動檢查路由 -----------------
 @app.route("/check-schedule", methods=["GET"])
 def check_schedule():
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -233,12 +233,10 @@ def check_schedule():
                     doc_props = doc_page_res.json().get("properties", {})
                     doc_type = doc_props.get("收/發文", {}).get("select", {}).get("name", "")
                     
-                    # 情況 A：如果是發文記錄，直接取消告警
                     if doc_type == "發文":
                         cancel_alert = True
                         break
                     
-                    # 情況 B：如果是收文記錄，且有填寫「後續辦理文」，代表已辦結，取消告警
                     if doc_type == "收文":
                         follow_up_docs = doc_props.get("後續辦理文", {}).get("relation", [])
                         if follow_up_docs:
@@ -248,10 +246,9 @@ def check_schedule():
                 pass
 
         if cancel_alert:
-            print(f"【已辦結 - 取消告警】任務「{title}」已有對應的發文或已完成後續辦理。")
             continue
 
-        # 4. 取得完成日 (支援公式欄位或日期欄位計算)
+        # 4. 取得完成日
         c_date, t_date = None, None
         for key in ["契約規定完成日", "契約完成日"]:
             if key in props:
@@ -333,18 +330,3 @@ def check_schedule():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
-
-# ----------------- 測試專用路由：手動發送測試 LINE 訊息 -----------------
-@app.route("/test-line", methods=["GET"])
-def test_line():
-    try:
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).push_message(
-                PushMessageRequest(
-                    to=ALERT_GROUP_ID, 
-                    messages=[TextMessage(text="🤖【系統測試】這是一則來自 Render 雲端助理的手動測試訊息！")]
-                )
-            )
-        return "Test LINE message sent successfully!"
-    except Exception as e:
-        return f"❌ 發送 LINE 訊息失敗：{str(e)}", 500
