@@ -175,7 +175,7 @@ def process_document_with_ai(content, is_image=False):
     except Exception as e:
         return f"❌ 解析或建檔發生錯誤：{str(e)}"
 
-# ----------------- 每日時程自動檢查路由 (含已發文取消告警機制) -----------------
+# ----------------- 每日時程自動檢查路由 (含已辦結/後續辦理文取消告警機制) -----------------
 @app.route("/check-schedule", methods=["GET"])
 def check_schedule():
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -218,8 +218,8 @@ def check_schedule():
         if status == "已完成": 
             continue
 
-        # 3. 【防呆機制】檢查是否有關聯「發文」記錄，有則直接取消/略過告警
-        has_sent_document = False
+        # 3. 【防呆機制】檢查是否有關聯發文，或收文是否已填寫「後續辦理文」，有則取消告警
+        cancel_alert = False
         related_docs = props.get("相關收發文歷程", {}).get("relation", [])
         for doc in related_docs:
             doc_id = doc["id"]
@@ -228,14 +228,23 @@ def check_schedule():
                 if doc_page_res.status_code == 200:
                     doc_props = doc_page_res.json().get("properties", {})
                     doc_type = doc_props.get("收/發文", {}).get("select", {}).get("name", "")
+                    
+                    # 情況 A：如果是發文記錄，直接取消告警
                     if doc_type == "發文":
-                        has_sent_document = True
+                        cancel_alert = True
                         break
+                    
+                    # 情況 B：如果是收文記錄，且有填寫「後續辦理文」，代表已辦結，取消告警
+                    if doc_type == "收文":
+                        follow_up_docs = doc_props.get("後續辦理文", {}).get("relation", [])
+                        if follow_up_docs:
+                            cancel_alert = True
+                            break
             except Exception:
                 pass
 
-        if has_sent_document:
-            print(f"【已提送 - 取消告警】任務「{title}」已有對應的發文記錄。")
+        if cancel_alert:
+            print(f"【已辦結 - 取消告警】任務「{title}」已有對應的發文或已完成後續辦理。")
             continue
 
         # 4. 取得完成日 (支援公式欄位或日期欄位計算)
