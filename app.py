@@ -333,3 +333,18 @@ def check_schedule():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+
+# ----------------- 測試專用路由：手動發送測試 LINE 訊息 -----------------
+@app.route("/test-line", methods=["GET"])
+def test_line():
+    try:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                PushMessageRequest(
+                    to=ALERT_GROUP_ID, 
+                    messages=[TextMessage(text="🤖【系統測試】這是一則來自 Render 雲端助理的手動測試訊息！")]
+                )
+            )
+        return "Test LINE message sent successfully!"
+    except Exception as e:
+        return f"❌ 發送 LINE 訊息失敗：{str(e)}", 500
