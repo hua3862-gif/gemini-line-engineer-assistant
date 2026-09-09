@@ -205,6 +205,18 @@ def run_daily_alert():
             if status == "已完成":
                 continue
 
+            # 🆕 新增邏輯：若「續辦文」欄位已設關聯，則取消該筆限辦日期的到逾期警示
+            cancel_reply_alert = False
+            for rel_key in ["續辦文", "後續辦理文"]:
+                if rel_key in props and props[rel_key] is not None:
+                    rel_info = props.get(rel_key, {})
+                    if isinstance(rel_info, dict) and rel_info.get("type") == "relation":
+                        if rel_info.get("relation", []):
+                            cancel_reply_alert = True
+                            break
+            if cancel_reply_alert:
+                continue
+
             due_str = None
             if "限辦日期" in props and props["限辦日期"] is not None:
                 p_info = props.get("限辦日期", {})
