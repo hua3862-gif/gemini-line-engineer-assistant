@@ -14,4 +14,4 @@ jobs:
     steps:
       - name: Send HTTP Request to Flask App
         run: |
-          curl -X GET "https://您的專案名稱.onrender.com/check-schedule"
+          curl -X GET "https://gemini-line-engineer-assistant-j1j0.onrender.com/check-schedule"
