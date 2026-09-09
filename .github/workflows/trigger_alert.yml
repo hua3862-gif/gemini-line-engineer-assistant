@@ -1,0 +1,17 @@
+name: Trigger Daily Alert
+
+on:
+  schedule:
+    # 台灣時間每天早上 9:00，換算成 UTC 時間是 01:00
+    - cron: '0 1 * * *'
+  
+  # 讓您可以手動在 GitHub 網頁上按鈕立即測試執行
+  workflow_dispatch:
+
+jobs:
+  call-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send HTTP Request to Flask App
+        run: |
+          curl -X GET "https://您的專案名稱.onrender.com/check-schedule"
