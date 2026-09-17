@@ -23,7 +23,7 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器（含時區強制對齊）"""
+    """強效版公式與日期欄位解析器（完美支援 Notion Formula 2.0）"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     candidates = []
@@ -33,46 +33,35 @@ def extract_date_from_prop(prop_info):
     if isinstance(date_obj, dict) and date_obj.get("start"):
         candidates.append(date_obj.get("start"))
         
-    # 2. 公式 Formula 欄位
+    # 2. 公式 Formula 欄位（深度解析 Formula 2.0 結構）
     formula = prop_info.get("formula")
     if isinstance(formula, dict):
+        # 情況 A：公式直接回傳字串
         if isinstance(formula.get("string"), str):
             candidates.append(formula.get("string"))
-        f_date = formula.get("date")
-        if isinstance(f_date, dict) and f_date.get("start"):
-            candidates.append(f_date.get("start"))
+        
+        # 情況 B：公式回傳日期物件 (formula -> date -> start)
+        f_date_obj = formula.get("date")
+        if isinstance(f_date_obj, dict) and f_date_obj.get("start"):
+            candidates.append(f_date_obj.get("start"))
+            
+        # 情況 C：遍歷 formula 內的所有層級找尋日期字串或子物件
         for k, v in formula.items():
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
-                
-    # 3. 彙整 Rollup 欄位
-    rollup = prop_info.get("rollup")
-    if isinstance(rollup, dict):
-        r_type = rollup.get("type")
-        if r_type == "date" and rollup.get("date"):
-            candidates.append(rollup.get("date"))
-        elif r_type == "array" and isinstance(rollup.get("array"), list):
-            for item in rollup.get("array", []):
-                if isinstance(item, dict):
-                    sub_d = extract_date_from_prop(item)
-                    if sub_d:
-                        if isinstance(sub_d, datetime):
-                            candidates.append(sub_d.strftime("%Y-%m-%d"))
-                        else:
-                            candidates.append(sub_d)
-                    if item.get("start"):
-                        candidates.append(item.get("start"))
+            elif isinstance(v, dict):
+                if v.get("start"):
+                    candidates.append(v.get("start"))
 
-    # 4. 其他任何可能的屬性字串
+    # 3. 其它屬性備援
     for k, v in prop_info.items():
         if isinstance(v, str) and len(v) >= 8:
             candidates.append(v)
         elif isinstance(v, dict):
-            for sub_k, sub_v in v.items():
-                if isinstance(sub_v, str) and len(sub_v) >= 8:
-                    candidates.append(sub_v)
+            if v.get("start"):
+                candidates.append(v.get("start"))
 
-    # 🌟 強化版日期解析核心（透過 Regex 濾除前面的燈號或文字，直接抓取 YYYY-MM-DD）
+    # 4. 正規表達式擷取 YYYY-MM-DD
     for date_str in candidates:
         if not date_str:
             continue
@@ -118,7 +107,7 @@ def run_daily_alert():
             if not page_id:
                 continue
             
-            # 🌟 關鍵修正：透過單頁 API 抓取，強制 Notion 計算包含關聯的公式欄位！
+            # 透過單頁 API 抓取，強制 Notion 計算包含關聯的公式欄位
             page_res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=notion_headers)
             if page_res.status_code != 200:
                 continue
