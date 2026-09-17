@@ -81,7 +81,6 @@ def extract_date_from_prop(prop_info):
         if match:
             try:
                 dt = datetime.strptime(match.group(0), "%Y-%m-%d")
-                # 強制賦予台灣時區，避免與 now_tw 相減報錯
                 return dt.replace(tzinfo=TW_TZ)
             except ValueError:
                 continue
@@ -90,7 +89,7 @@ def extract_date_from_prop(prop_info):
 
 def run_daily_alert():
     now_tw = datetime.now(TW_TZ)
-    print(f"\n================ [{now_tw.strftime('%Y-%m-%d %H:%M:%S' )}] 開始執行檢查 ================")
+    print(f"\n================ [{now_tw.strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ================")
     today = now_tw.replace(hour=0, minute=0, second=0, microsecond=0)
     tasks = []
 
@@ -114,7 +113,17 @@ def run_daily_alert():
 
         print(f"📊 工程時程資料庫總共撈取到 {len(all_pages)} 筆頁面。")
 
-        for page in all_pages:
+        for light_page in all_pages:
+            page_id = light_page.get("id")
+            if not page_id:
+                continue
+            
+            # 🌟 關鍵修正：透過單頁 API 抓取，強制 Notion 計算包含關聯的公式欄位！
+            page_res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=notion_headers)
+            if page_res.status_code != 200:
+                continue
+            page = page_res.json()
+
             props = page.get("properties", {})
             title = "無標題"
             for prop_name, prop_val in props.items():
@@ -135,10 +144,10 @@ def run_daily_alert():
                             break
 
             if status == "已完成": 
-                print(f"   [略過] 項目 '{title}' 狀態為已完成")
+                print(f"    [略過] 項目 '{title}' 狀態為已完成")
                 continue
 
-            # 🛠️ 邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
+            # 邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控
             has_related_docs = False
             rel_prop = props.get("相關收發文歷程")
             if rel_prop and isinstance(rel_prop, dict):
@@ -146,10 +155,10 @@ def run_daily_alert():
                     has_related_docs = True
 
             if has_related_docs:
-                print(f"   [略過] 項目 '{title}' 具有相關收發文歷程，交由收發文庫處理")
+                print(f"    [略過] 項目 '{title}' 具有相關收發文歷程，交由收發文庫處理")
                 continue 
 
-            # 🛠️ 鎖定「契約規定完成日」
+            # 鎖定「契約規定完成日」
             due_date = None
             for key in ["契約規定完成日", "契約完成日", "合約期限"]:
                 if key in props:
@@ -166,7 +175,7 @@ def run_daily_alert():
                     "diff_days": diff_days
                 })
             else:
-                print(f"   [注意] 項目 '{title}' 找不到有效的期限日期欄位")
+                print(f"    [注意] 項目 '{title}' 找不到有效的期限日期欄位")
 
     # 2. 查詢收發文歷程明細資料庫 (REPLY_DB_ID) 
     if REPLY_DB_ID:
@@ -208,7 +217,7 @@ def run_daily_alert():
                             status = sel.get("name", "") or ""
                             break
             if status == "已完成":
-                print(f"   [略過] 收發文 '{title}' 狀態為已完成")
+                print(f"    [略過] 收發文 '{title}' 狀態為已完成")
                 continue
 
             cancel_reply_alert = False
@@ -218,7 +227,7 @@ def run_daily_alert():
                         cancel_reply_alert = True
                         break
             if cancel_reply_alert:
-                print(f"   [略過] 收發文 '{title}' 已有續辦文")
+                print(f"    [略過] 收發文 '{title}' 已有續辦文")
                 continue
 
             due_date = extract_date_from_prop(props.get("限辦日期"))
@@ -241,7 +250,7 @@ def run_daily_alert():
                     "diff_days": diff_days
                 })
             else:
-                print(f"   [注意] 收發文 '{title}' 找不到『限辦日期』")
+                print(f"    [注意] 收發文 '{title}' 找不到『限辦日期』")
 
     # 彙整告警分類
     alerts = {
