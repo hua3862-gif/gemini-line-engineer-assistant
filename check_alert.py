@@ -6,14 +6,12 @@ from linebot.v3.messaging import ApiClient, Configuration, MessagingApi, PushMes
 # ----------------- 環境變數與設定 -----------------
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID") # 主資料庫 ID
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_DATABASE_ID) 
-
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-
 notion_headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
     "Notion-Version": "2022-06-28",
@@ -21,7 +19,7 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器：自動從 Notion 欄位的任何角落搜捕日期字串"""
+    """全方位萬用日期擷取器"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     
@@ -40,17 +38,19 @@ def extract_date_from_prop(prop_info):
         f_date = formula.get("date")
         if isinstance(f_date, dict) and f_date.get("start"):
             candidates.append(f_date.get("start"))
-        # 掃描 formula 底下的所有欄位，防止特殊型態漏抓
         for k, v in formula.items():
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
                 
-    # 3. 檢查一般文字或內容
+    # 3. 檢查其他型態或子屬性
     for k, v in prop_info.items():
         if isinstance(v, str) and len(v) >= 8:
             candidates.append(v)
+        elif isinstance(v, dict):
+            for sub_k, sub_v in v.items():
+                if isinstance(sub_v, str) and len(sub_v) >= 8:
+                    candidates.append(sub_v)
 
-    # 逐一嘗試清洗與解析日期
     for date_str in candidates:
         if not date_str:
             continue
@@ -64,7 +64,7 @@ def extract_date_from_prop(prop_info):
 
 
 def run_daily_alert():
-    print(f"[{datetime.now().strftime('%Y-%m-%d')}] 開始執行工程時程與收發文自動檢查...")
+    print(f"\n================ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ================")
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     tasks = []
 
@@ -86,7 +86,7 @@ def run_daily_alert():
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
-        print(f"總共撈取到 {len(all_pages)} 筆工程進度頁面。")
+        print(f"📌 [工程進度] 總共撈取到 {len(all_pages)} 筆頁面。")
 
         for page in all_pages:
             props = page.get("properties", {})
@@ -97,6 +97,14 @@ def run_daily_alert():
                     if title_array:
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
+
+            # 偵錯：印出每一筆的名稱與抓到的日期原始資料
+            c_prop = props.get("契約規定完成日")
+            t_prop = props.get("預計完成日")
+            c_dt = extract_date_from_prop(c_prop) if c_prop else None
+            t_dt = extract_date_from_prop(t_prop) if t_prop else None
+            
+            print(f"  > 檢查項目: 【{title}】 | 契約日解析結果: {c_dt} | 預計日解析結果: {t_dt}")
 
             status = "未開始"
             for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
@@ -109,6 +117,7 @@ def run_daily_alert():
                             break
                     
             if status == "已完成": 
+                print(f"    ↳ 跳過：狀態為已完成")
                 continue
 
             # 防呆機制：檢查相關收發文
@@ -126,7 +135,6 @@ def run_daily_alert():
                         doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
                         if doc_page_res.status_code == 200:
                             doc_props = doc_page_res.json().get("properties", {})
-                            
                             type_prop = doc_props.get("收/發文")
                             doc_type = ""
                             if type_prop and isinstance(type_prop, dict):
@@ -137,33 +145,19 @@ def run_daily_alert():
                             if doc_type == "發文":
                                 cancel_alert = True
                                 break
-                            
                             if doc_type == "收文":
                                 follow_prop = doc_props.get("後續辦理文")
                                 if follow_prop and isinstance(follow_prop, dict):
-                                    follow_up_docs = follow_prop.get("relation", [])
-                                    if follow_up_docs:
+                                    if follow_prop.get("relation", []):
                                         cancel_alert = True
                                         break
                     except Exception:
                         pass
 
             if cancel_alert:
+                print(f"    ↳ 跳過：已有相關發文或後續辦理文")
                 continue
 
-            c_dt, t_dt = None, None
-            for key in ["契約規定完成日", "契約完成日"]:
-                if key in props and props[key] is not None:
-                    c_dt = extract_date_from_prop(props[key])
-                    if c_dt:
-                        break
-                    
-            for key in ["預計完成日", "預計完工日"]:
-                if key in props and props[key] is not None:
-                    t_dt = extract_date_from_prop(props[key])
-                    if t_dt:
-                        break
-            
             dates = []
             if c_dt: dates.append(c_dt)
             if t_dt: dates.append(t_dt)
@@ -171,87 +165,14 @@ def run_daily_alert():
             if dates:
                 due_date = min(dates)
                 diff_days = (due_date - today).days
+                print(f"    ✅ 成功加入排程！最終判定日: {due_date.strftime('%Y-%m-%d')} (剩餘 {diff_days} 天)")
                 tasks.append({
                     "title": f"[工程] {title}", 
                     "due_date": due_date.strftime("%Y-%m-%d"), 
                     "diff_days": diff_days
                 })
-
-    # 2. 查詢收發文歷程明細資料庫 (REPLY_DB_ID) 檢查「限辦日期」
-    if REPLY_DB_ID:
-        reply_url = f"https://api.notion.com/v1/databases/{REPLY_DB_ID}/query"
-        reply_pages = []
-        has_more = True
-        start_cursor = None
-        
-        while has_more:
-            payload = {"start_cursor": start_cursor} if start_cursor else {}
-            res = requests.post(reply_url, headers=notion_headers, json=payload)
-            if res.status_code != 200: 
-                print(f"⚠️ 查詢收發文資料庫失敗: {res.text}")
-                break
-            data = res.json()
-            reply_pages.extend(data.get("results", []))
-            has_more = data.get("has_more", False)
-            start_cursor = data.get("next_cursor")
-
-        print(f"總共撈取到 {len(reply_pages)} 筆收發文頁面。")
-
-        for page in reply_pages:
-            props = page.get("properties", {})
-            title = "無標題"
-            for prop_name, prop_val in props.items():
-                if prop_val and isinstance(prop_val, dict) and prop_val.get("type") == "title":
-                    title_array = prop_val.get("title", [])
-                    if title_array:
-                        title = title_array[0].get("text", {}).get("content", "無標題")
-                    break
-
-            status = ""
-            for key in ["文件狀態", "狀態"]:
-                if key in props and props[key] is not None:
-                    status_obj = props.get(key, {})
-                    if isinstance(status_obj, dict):
-                        sel = status_obj.get("select")
-                        if isinstance(sel, dict):
-                            status = sel.get("name", "") or ""
-                            break
-            if status == "已完成":
-                continue
-
-            cancel_reply_alert = False
-            for rel_key in ["續辦文", "後續辦理文"]:
-                if rel_key in props and props[rel_key] is not None:
-                    rel_info = props.get(rel_key, {})
-                    if isinstance(rel_info, dict) and rel_info.get("type") == "relation":
-                        if rel_info.get("relation", []):
-                            cancel_reply_alert = True
-                            break
-            if cancel_reply_alert:
-                continue
-
-            due_date = None
-            if "限辦日期" in props and props["限辦日期"] is not None:
-                due_date = extract_date_from_prop(props["限辦日期"])
-
-            if due_date:
-                diff_days = (due_date - today).days
-                doc_number = ""
-                for key in ["正式文號", "文號"]:
-                    if key in props and props[key] is not None:
-                        doc_num_prop = props.get(key, {})
-                        if isinstance(doc_num_prop, dict):
-                            rt = doc_num_prop.get("rich_text", [])
-                            if rt and len(rt) > 0 and isinstance(rt[0], dict):
-                                doc_number = rt[0].get("text", {}).get("content", "")
-                                break
-
-                display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
-                tasks.append({
-                    "title": display_title,
-                    "due_date": due_date.strftime("%Y-%m-%d"),
-                    "diff_days": diff_days
-                })
+            else:
+                print(f"    ❌ 失敗：找不到任何有效日期")
 
     # 彙整告警分類
     alerts = {
@@ -298,7 +219,7 @@ def run_daily_alert():
                 messages=[TextMessage(text="\n".join(msg_lines))]
             )
         )
-    print("Alert pushed successfully!")
+    print("Alert pushed successfully!\n")
 
 if __name__ == "__main__":
     run_daily_alert()
