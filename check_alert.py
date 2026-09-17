@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import requests
+import re  # <--- 用於精準抓取日期字串的工具
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi, PushMessageRequest, TextMessage
 
 # ----------------- 環境變數與設定 -----------------
@@ -19,7 +20,7 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器（支援 Date, Formula, Rollup 等多種型態）"""
+    """全方位萬用日期擷取器（強化版：自動過濾 emoji、中文字與格式化字串）"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     candidates = []
@@ -41,7 +42,7 @@ def extract_date_from_prop(prop_info):
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
                 
-    # 3. 彙整 Rollup 欄位（針對陣列或單一日期）
+    # 3. 彙整 Rollup 欄位
     rollup = prop_info.get("rollup")
     if isinstance(rollup, dict):
         r_type = rollup.get("type")
@@ -68,13 +69,15 @@ def extract_date_from_prop(prop_info):
                 if isinstance(sub_v, str) and len(sub_v) >= 8:
                     candidates.append(sub_v)
 
+    # 🌟 強化版日期解析核心（透過 Regex 濾除前面的燈號或文字，直接抓取 YYYY-MM-DD）
     for date_str in candidates:
         if not date_str:
             continue
-        cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")[:10]
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m-%d-%Y"):
+        cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
+        match = re.search(r'\d{4}-\d{2}-\d{2}', cleaned)
+        if match:
             try:
-                return datetime.strptime(cleaned, fmt)
+                return datetime.strptime(match.group(0), "%Y-%m-%d")
             except ValueError:
                 continue
     return None
@@ -125,7 +128,7 @@ def run_daily_alert():
             if status == "已完成": 
                 continue
 
-            # 🛠️ 簡化邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
+            # 🛠️ 邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
             has_related_docs = False
             rel_prop = props.get("相關收發文歷程")
             if rel_prop and isinstance(rel_prop, dict):
@@ -135,7 +138,7 @@ def run_daily_alert():
             if has_related_docs:
                 continue 
 
-            # 🛠️ 唯一鎖定「契約規定完成日」
+            # 🛠️ 鎖定「契約規定完成日」
             due_date = None
             for key in ["契約規定完成日", "契約完成日", "合約期限"]:
                 if key in props:
