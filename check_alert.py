@@ -20,6 +20,43 @@ notion_headers = {
     "Content-Type": "application/json",
 }
 
+def extract_date_from_prop(prop_info):
+    """強效解析 Notion 欄位日期（支援 standard date, formula date, formula string）"""
+    if not prop_info or not isinstance(prop_info, dict):
+        return None
+    
+    p_type = prop_info.get("type")
+    date_str = None
+
+    if p_type == "date":
+        date_obj = prop_info.get("date")
+        if isinstance(date_obj, dict):
+            date_str = date_obj.get("start")
+            
+    elif p_type == "formula":
+        form_obj = prop_info.get("formula", {})
+        if isinstance(form_obj, dict):
+            form_type = form_obj.get("type")
+            # 情況 A：公式結果被判定為 date
+            if form_type == "date":
+                date_obj = form_obj.get("date")
+                if isinstance(date_obj, dict):
+                    date_str = date_obj.get("start")
+            # 情況 B：公式結果被判定為 string (文字格式的日期)
+            elif form_type == "string":
+                date_str = form_obj.get("string")
+
+    if date_str:
+        # 清理並嘗試轉換為日期格式
+        cleaned_str = date_str.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")[:10]
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(cleaned_str, fmt)
+            except ValueError:
+                continue
+    return None
+
+
 def run_daily_alert():
     print(f"[{datetime.now().strftime('%Y-%m-%d')}] 開始執行工程時程與收發文自動檢查...")
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -108,52 +145,22 @@ def run_daily_alert():
             if cancel_alert:
                 continue
 
-            c_date, t_date = None, None
+            c_dt, t_dt = None, None
             for key in ["契約規定完成日", "契約完成日"]:
                 if key in props and props[key] is not None:
-                    p_info = props.get(key, {})
-                    if isinstance(p_info, dict):
-                        p_type = p_info.get("type")
-                        if p_type == "date":
-                            date_obj = p_info.get("date")
-                            if isinstance(date_obj, dict):
-                                c_date = date_obj.get("start")
-                        elif p_type == "formula":
-                            form_obj = p_info.get("formula")
-                            if isinstance(form_obj, dict):
-                                date_obj = form_obj.get("date")
-                                if isinstance(date_obj, dict):
-                                    c_date = date_obj.get("start")
-                    break
+                    c_dt = extract_date_from_prop(props[key])
+                    if c_dt:
+                        break
                     
             for key in ["預計完成日", "預計完工日"]:
                 if key in props and props[key] is not None:
-                    p_info = props.get(key, {})
-                    if isinstance(p_info, dict):
-                        p_type = p_info.get("type")
-                        if p_type == "date":
-                            date_obj = p_info.get("date")
-                            if isinstance(date_obj, dict):
-                                t_date = date_obj.get("start")
-                        elif p_type == "formula":
-                            form_obj = p_info.get("formula")
-                            if isinstance(form_obj, dict):
-                                date_obj = form_obj.get("date")
-                                if isinstance(date_obj, dict):
-                                    t_date = date_obj.get("start")
-                    break
+                    t_dt = extract_date_from_prop(props[key])
+                    if t_dt:
+                        break
             
             dates = []
-            if c_date: 
-                try:
-                    dates.append(datetime.strptime(c_date[:10], "%Y-%m-%d"))
-                except Exception:
-                    pass
-            if t_date: 
-                try:
-                    dates.append(datetime.strptime(t_date[:10], "%Y-%m-%d"))
-                except Exception:
-                    pass
+            if c_dt: dates.append(c_dt)
+            if t_dt: dates.append(t_dt)
             
             if dates:
                 due_date = min(dates)
@@ -206,7 +213,6 @@ def run_daily_alert():
             if status == "已完成":
                 continue
 
-            # 若「續辦文」或「後續辦理文」欄位已設關聯，則取消該筆限辦日期的到逾期警示
             cancel_reply_alert = False
             for rel_key in ["續辦文", "後續辦理文"]:
                 if rel_key in props and props[rel_key] is not None:
@@ -218,45 +224,28 @@ def run_daily_alert():
             if cancel_reply_alert:
                 continue
 
-            due_str = None
+            due_date = None
             if "限辦日期" in props and props["限辦日期"] is not None:
-                p_info = props.get("限辦日期", {})
-                if isinstance(p_info, dict):
-                    p_type = p_info.get("type")
-                    if p_type == "date":
-                        date_obj = p_info.get("date")
-                        if isinstance(date_obj, dict):
-                            due_str = date_obj.get("start")
-                    elif p_type == "formula":
-                        form_obj = p_info.get("formula")
-                        if isinstance(form_obj, dict):
-                            date_obj = form_obj.get("date")
-                            if isinstance(date_obj, dict):
-                                due_str = date_obj.get("start")
+                due_date = extract_date_from_prop(props["限辦日期"])
 
-            if due_str:
-                try:
-                    due_date = datetime.strptime(due_str[:10], "%Y-%m-%d")
-                    diff_days = (due_date - today).days
-                    
-                    doc_number = ""
-                    for key in ["正式文號", "文號"]:
-                        if key in props and props[key] is not None:
-                            doc_num_prop = props.get(key, {})
-                            if isinstance(doc_num_prop, dict):
-                                rt = doc_num_prop.get("rich_text", [])
-                                if rt and len(rt) > 0 and isinstance(rt[0], dict):
-                                    doc_number = rt[0].get("text", {}).get("content", "")
-                                    break
+            if due_date:
+                diff_days = (due_date - today).days
+                doc_number = ""
+                for key in ["正式文號", "文號"]:
+                    if key in props and props[key] is not None:
+                        doc_num_prop = props.get(key, {})
+                        if isinstance(doc_num_prop, dict):
+                            rt = doc_num_prop.get("rich_text", [])
+                            if rt and len(rt) > 0 and isinstance(rt[0], dict):
+                                doc_number = rt[0].get("text", {}).get("content", "")
+                                break
 
-                    display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
-                    tasks.append({
-                        "title": display_title,
-                        "due_date": due_date.strftime("%Y-%m-%d"),
-                        "diff_days": diff_days
-                    })
-                except Exception:
-                    pass
+                display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
+                tasks.append({
+                    "title": display_title,
+                    "due_date": due_date.strftime("%Y-%m-%d"),
+                    "diff_days": diff_days
+                })
 
     # 彙整告警分類
     alerts = {
