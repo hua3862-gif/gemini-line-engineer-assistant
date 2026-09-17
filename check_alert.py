@@ -23,15 +23,17 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器"""
+    """全方位萬用日期擷取器（含時區強制對齊）"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     candidates = []
     
+    # 1. 一般 Date 欄位
     date_obj = prop_info.get("date")
     if isinstance(date_obj, dict) and date_obj.get("start"):
         candidates.append(date_obj.get("start"))
         
+    # 2. 公式 Formula 欄位
     formula = prop_info.get("formula")
     if isinstance(formula, dict):
         if isinstance(formula.get("string"), str):
@@ -43,6 +45,7 @@ def extract_date_from_prop(prop_info):
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
                 
+    # 3. 彙整 Rollup 欄位
     rollup = prop_info.get("rollup")
     if isinstance(rollup, dict):
         r_type = rollup.get("type")
@@ -60,6 +63,7 @@ def extract_date_from_prop(prop_info):
                     if item.get("start"):
                         candidates.append(item.get("start"))
 
+    # 4. 其他任何可能的屬性字串
     for k, v in prop_info.items():
         if isinstance(v, str) and len(v) >= 8:
             candidates.append(v)
@@ -68,6 +72,7 @@ def extract_date_from_prop(prop_info):
                 if isinstance(sub_v, str) and len(sub_v) >= 8:
                     candidates.append(sub_v)
 
+    # 🌟 強化版日期解析核心（透過 Regex 濾除前面的燈號或文字，直接抓取 YYYY-MM-DD）
     for date_str in candidates:
         if not date_str:
             continue
@@ -75,7 +80,9 @@ def extract_date_from_prop(prop_info):
         match = re.search(r'\d{4}-\d{2}-\d{2}', cleaned)
         if match:
             try:
-                return datetime.strptime(match.group(0), "%Y-%m-%d")
+                dt = datetime.strptime(match.group(0), "%Y-%m-%d")
+                # 強制賦予台灣時區，避免與 now_tw 相減報錯
+                return dt.replace(tzinfo=TW_TZ)
             except ValueError:
                 continue
     return None
@@ -98,11 +105,14 @@ def run_daily_alert():
             payload = {"start_cursor": start_cursor} if start_cursor else {}
             res = requests.post(url, headers=notion_headers, json=payload)
             if res.status_code != 200: 
+                print(f"⚠️ 讀取工程時程資料庫失敗，狀態碼: {res.status_code}, 內容: {res.text}")
                 break
             data = res.json()
             all_pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+
+        print(f"📊 工程時程資料庫總共撈取到 {len(all_pages)} 筆頁面。")
 
         for page in all_pages:
             props = page.get("properties", {})
@@ -125,8 +135,10 @@ def run_daily_alert():
                             break
 
             if status == "已完成": 
+                print(f"   [略過] 項目 '{title}' 狀態為已完成")
                 continue
 
+            # 🛠️ 邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
             has_related_docs = False
             rel_prop = props.get("相關收發文歷程")
             if rel_prop and isinstance(rel_prop, dict):
@@ -134,8 +146,10 @@ def run_daily_alert():
                     has_related_docs = True
 
             if has_related_docs:
+                print(f"   [略過] 項目 '{title}' 具有相關收發文歷程，交由收發文庫處理")
                 continue 
 
+            # 🛠️ 鎖定「契約規定完成日」
             due_date = None
             for key in ["契約規定完成日", "契約完成日", "合約期限"]:
                 if key in props:
@@ -151,6 +165,8 @@ def run_daily_alert():
                     "due_date": due_date.strftime("%Y-%m-%d"), 
                     "diff_days": diff_days
                 })
+            else:
+                print(f"   [注意] 項目 '{title}' 找不到有效的期限日期欄位")
 
     # 2. 查詢收發文歷程明細資料庫 (REPLY_DB_ID) 
     if REPLY_DB_ID:
@@ -169,6 +185,8 @@ def run_daily_alert():
             reply_pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+
+        print(f"📊 收發文資料庫總共撈取到 {len(reply_pages)} 筆頁面。")
 
         for page in reply_pages:
             props = page.get("properties", {})
@@ -190,6 +208,7 @@ def run_daily_alert():
                             status = sel.get("name", "") or ""
                             break
             if status == "已完成":
+                print(f"   [略過] 收發文 '{title}' 狀態為已完成")
                 continue
 
             cancel_reply_alert = False
@@ -199,6 +218,7 @@ def run_daily_alert():
                         cancel_reply_alert = True
                         break
             if cancel_reply_alert:
+                print(f"   [略過] 收發文 '{title}' 已有續辦文")
                 continue
 
             due_date = extract_date_from_prop(props.get("限辦日期"))
@@ -220,6 +240,8 @@ def run_daily_alert():
                     "due_date": due_date.strftime("%Y-%m-%d"),
                     "diff_days": diff_days
                 })
+            else:
+                print(f"   [注意] 收發文 '{title}' 找不到『限辦日期』")
 
     # 彙整告警分類
     alerts = {
@@ -256,7 +278,7 @@ def run_daily_alert():
                 msg_lines.append(f"• {t['title']} ({t['due_date']})")
     
     if not has_alert: 
-        print("No alerts found today.")
+        print("No alerts found today (no tasks match the alert schedule).")
         return
 
     with ApiClient(configuration) as api_client:
