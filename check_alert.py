@@ -21,37 +21,43 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """強效解析 Notion 欄位日期（支援 standard date, formula date, formula string）"""
+    """全方位萬用日期擷取器：自動從 Notion 欄位的任何角落搜捕日期字串"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     
-    p_type = prop_info.get("type")
-    date_str = None
+    candidates = []
+    
+    # 1. 檢查標準日期格式
+    date_obj = prop_info.get("date")
+    if isinstance(date_obj, dict) and date_obj.get("start"):
+        candidates.append(date_obj.get("start"))
+        
+    # 2. 檢查公式計算結果 (Formula)
+    formula = prop_info.get("formula")
+    if isinstance(formula, dict):
+        if isinstance(formula.get("string"), str):
+            candidates.append(formula.get("string"))
+        f_date = formula.get("date")
+        if isinstance(f_date, dict) and f_date.get("start"):
+            candidates.append(f_date.get("start"))
+        # 掃描 formula 底下的所有欄位，防止特殊型態漏抓
+        for k, v in formula.items():
+            if isinstance(v, str) and len(v) >= 8:
+                candidates.append(v)
+                
+    # 3. 檢查一般文字或內容
+    for k, v in prop_info.items():
+        if isinstance(v, str) and len(v) >= 8:
+            candidates.append(v)
 
-    if p_type == "date":
-        date_obj = prop_info.get("date")
-        if isinstance(date_obj, dict):
-            date_str = date_obj.get("start")
-            
-    elif p_type == "formula":
-        form_obj = prop_info.get("formula", {})
-        if isinstance(form_obj, dict):
-            form_type = form_obj.get("type")
-            # 情況 A：公式結果被判定為 date
-            if form_type == "date":
-                date_obj = form_obj.get("date")
-                if isinstance(date_obj, dict):
-                    date_str = date_obj.get("start")
-            # 情況 B：公式結果被判定為 string (文字格式的日期)
-            elif form_type == "string":
-                date_str = form_obj.get("string")
-
-    if date_str:
-        # 清理並嘗試轉換為日期格式
-        cleaned_str = date_str.replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")[:10]
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+    # 逐一嘗試清洗與解析日期
+    for date_str in candidates:
+        if not date_str:
+            continue
+        cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")[:10]
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m-%d-%Y"):
             try:
-                return datetime.strptime(cleaned_str, fmt)
+                return datetime.strptime(cleaned, fmt)
             except ValueError:
                 continue
     return None
