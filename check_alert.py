@@ -50,10 +50,8 @@ def extract_date_from_prop(prop_info):
         elif r_type == "array" and isinstance(rollup.get("array"), list):
             for item in rollup.get("array", []):
                 if isinstance(item, dict):
-                    # 遞迴檢查 array 裡面的 date
                     sub_d = extract_date_from_prop(item)
                     if sub_d:
-                        # 已經是 datetime 或者是字串
                         if isinstance(sub_d, datetime):
                             candidates.append(sub_d.strftime("%Y-%m-%d"))
                         else:
@@ -114,12 +112,6 @@ def run_daily_alert():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 除錯用：印出包含「技師」或「承辦」的項目欄位內容
-            if "技師" in title or "承辦" in title:
-                print(f"\n🔍 找到目標項目: 【{title}】")
-                for p_key, p_val in props.items():
-                    print(f"   - 欄位名稱 [{p_key}]: 內容 -> {p_val}")
-
             status = "未開始"
             for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
                 if key in props and props[key] is not None:
@@ -129,6 +121,13 @@ def run_daily_alert():
                         if isinstance(sel, dict):
                             status = sel.get("name", "未開始") or "未開始"
                             break
+
+            # 🔍 強制印出每一筆工程項目的名稱、狀態、與找到的日期（特別鎖定技師/承辦）
+            if "技師" in title or "承辦" in title:
+                print(f"\n🔍 找到目標項目: 【{title}】 | 狀態: {status}")
+                for p_key, p_val in props.items():
+                    print(f"   - 欄位 [{p_key}]: 內容 -> {p_val}")
+
             if status == "已完成": 
                 continue
 
@@ -159,7 +158,7 @@ def run_daily_alert():
             if cancel_alert:
                 continue
 
-            # 🛠️ 尋找所有可能的日期欄位（包含 Rollup 彙整欄位）
+            # 尋找所有可能的日期欄位
             dates = []
             for p_key, p_val in props.items():
                 parsed_d = extract_date_from_prop(p_val)
