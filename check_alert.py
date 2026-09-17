@@ -19,15 +19,17 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器"""
+    """全方位萬用日期擷取器（支援 Date, Formula, Rollup 等多種型態）"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     candidates = []
     
+    # 1. 一般 Date 欄位
     date_obj = prop_info.get("date")
     if isinstance(date_obj, dict) and date_obj.get("start"):
         candidates.append(date_obj.get("start"))
         
+    # 2. 公式 Formula 欄位
     formula = prop_info.get("formula")
     if isinstance(formula, dict):
         if isinstance(formula.get("string"), str):
@@ -39,6 +41,27 @@ def extract_date_from_prop(prop_info):
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
                 
+    # 3. 彙整 Rollup 欄位（針對陣列或單一日期）
+    rollup = prop_info.get("rollup")
+    if isinstance(rollup, dict):
+        r_type = rollup.get("type")
+        if r_type == "date" and rollup.get("date"):
+            candidates.append(rollup.get("date"))
+        elif r_type == "array" and isinstance(rollup.get("array"), list):
+            for item in rollup.get("array", []):
+                if isinstance(item, dict):
+                    # 遞迴檢查 array 裡面的 date
+                    sub_d = extract_date_from_prop(item)
+                    if sub_d:
+                        # 已經是 datetime 或者是字串
+                        if isinstance(sub_d, datetime):
+                            candidates.append(sub_d.strftime("%Y-%m-%d"))
+                        else:
+                            candidates.append(sub_d)
+                    if item.get("start"):
+                        candidates.append(item.get("start"))
+
+    # 4. 其他任何可能的屬性字串
     for k, v in prop_info.items():
         if isinstance(v, str) and len(v) >= 8:
             candidates.append(v)
@@ -91,8 +114,8 @@ def run_daily_alert():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 🔍【特別除錯】：印出這筆資料的所有屬性名稱與內容，看「技師簽證執行計畫」到底把日期存在哪個欄位裡！
-            if "技師" in title:
+            # 除錯用：印出包含「技師」或「承辦」的項目欄位內容
+            if "技師" in title or "承辦" in title:
                 print(f"\n🔍 找到目標項目: 【{title}】")
                 for p_key, p_val in props.items():
                     print(f"   - 欄位名稱 [{p_key}]: 內容 -> {p_val}")
@@ -136,7 +159,7 @@ def run_daily_alert():
             if cancel_alert:
                 continue
 
-            # 🛠️ 尋找所有可能的日期欄位，或者直接掃描整頁所有屬性找日期！
+            # 🛠️ 尋找所有可能的日期欄位（包含 Rollup 彙整欄位）
             dates = []
             for p_key, p_val in props.items():
                 parsed_d = extract_date_from_prop(p_val)
