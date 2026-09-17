@@ -122,51 +122,28 @@ def run_daily_alert():
                             status = sel.get("name", "未開始") or "未開始"
                             break
 
-            # 🔍 強制印出每一筆工程項目的名稱、狀態、與找到的日期（特別鎖定技師/承辦）
-            if "技師" in title or "承辦" in title:
-                print(f"\n🔍 找到目標項目: 【{title}】 | 狀態: {status}")
-                for p_key, p_val in props.items():
-                    print(f"   - 欄位 [{p_key}]: 內容 -> {p_val}")
-
             if status == "已完成": 
                 continue
 
-            cancel_alert = False
+            # 🛠️ 簡化邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
+            has_related_docs = False
             rel_prop = props.get("相關收發文歷程")
             if rel_prop and isinstance(rel_prop, dict):
-                for doc in rel_prop.get("relation", []):
-                    if not isinstance(doc, dict) or not doc.get("id"):
-                        continue
-                    try:
-                        doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc.get('id')}", headers=notion_headers)
-                        if doc_page_res.status_code == 200:
-                            doc_props = doc_page_res.json().get("properties", {})
-                            type_prop = doc_props.get("收/發文")
-                            doc_type = ""
-                            if type_prop and isinstance(type_prop, dict):
-                                sel = type_prop.get("select")
-                                if isinstance(sel, dict):
-                                    doc_type = sel.get("name", "") or ""
-                            if doc_type == "發文":
-                                cancel_alert = True
-                                break
-                            if doc_type == "收文" and doc_props.get("後續辦理文", {}).get("relation", []):
-                                cancel_alert = True
-                                break
-                    except Exception:
-                        pass
-            if cancel_alert:
-                continue
+                if rel_prop.get("relation", []):
+                    has_related_docs = True
 
-            # 尋找所有可能的日期欄位
-            dates = []
-            for p_key, p_val in props.items():
-                parsed_d = extract_date_from_prop(p_val)
-                if parsed_d:
-                    dates.append(parsed_d)
-            
-            if dates:
-                due_date = min(dates)
+            if has_related_docs:
+                continue 
+
+            # 🛠️ 唯一鎖定「契約規定完成日」
+            due_date = None
+            for key in ["契約規定完成日", "契約完成日", "合約期限"]:
+                if key in props:
+                    due_date = extract_date_from_prop(props.get(key))
+                    if due_date:
+                        break
+
+            if due_date:
                 diff_days = (due_date - today).days
                 tasks.append({
                     "title": f"[工程] {title}", 
