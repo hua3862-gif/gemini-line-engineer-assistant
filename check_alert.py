@@ -22,7 +22,6 @@ def extract_date_from_prop(prop_info):
     """全方位萬用日期擷取器"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
-    
     candidates = []
     
     date_obj = prop_info.get("date")
@@ -61,7 +60,7 @@ def extract_date_from_prop(prop_info):
 
 
 def run_daily_alert():
-    print(f"\n================ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ================")
+    print(f"\n================ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S' )}] 開始執行檢查 ================")
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     tasks = []
 
@@ -91,6 +90,12 @@ def run_daily_alert():
                     if title_array:
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
+
+            # 🔍【特別除錯】：印出這筆資料的所有屬性名稱與內容，看「技師簽證執行計畫」到底把日期存在哪個欄位裡！
+            if "技師" in title:
+                print(f"\n🔍 找到目標項目: 【{title}】")
+                for p_key, p_val in props.items():
+                    print(f"   - 欄位名稱 [{p_key}]: 內容 -> {p_val}")
 
             status = "未開始"
             for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
@@ -131,10 +136,13 @@ def run_daily_alert():
             if cancel_alert:
                 continue
 
-            c_dt = extract_date_from_prop(props.get("契約規定完成日") or props.get("契約完成日"))
-            t_dt = extract_date_from_prop(props.get("預計完成日") or props.get("預計完工日"))
+            # 🛠️ 尋找所有可能的日期欄位，或者直接掃描整頁所有屬性找日期！
+            dates = []
+            for p_key, p_val in props.items():
+                parsed_d = extract_date_from_prop(p_val)
+                if parsed_d:
+                    dates.append(parsed_d)
             
-            dates = [d for d in [c_dt, t_dt] if d]
             if dates:
                 due_date = min(dates)
                 diff_days = (due_date - today).days
@@ -192,7 +200,6 @@ def run_daily_alert():
             if cancel_reply_alert:
                 continue
 
-            # 🛠️ 這裡補上了萬用擷取器，確保收發文的限辦日期也能被抓到！
             due_date = extract_date_from_prop(props.get("限辦日期"))
 
             if due_date:
