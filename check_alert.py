@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 import requests
-import re  # <--- 用於精準抓取日期字串的工具
+import re 
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi, PushMessageRequest, TextMessage
 
 # ----------------- 環境變數與設定 -----------------
@@ -12,6 +12,9 @@ PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_DATABASE_ID) 
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 
+# 設定台灣時區 (UTC+8)
+TW_TZ = timezone(timedelta(hours=8))
+
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 notion_headers = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -20,17 +23,15 @@ notion_headers = {
 }
 
 def extract_date_from_prop(prop_info):
-    """全方位萬用日期擷取器（強化版：自動過濾 emoji、中文字與格式化字串）"""
+    """全方位萬用日期擷取器"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     candidates = []
     
-    # 1. 一般 Date 欄位
     date_obj = prop_info.get("date")
     if isinstance(date_obj, dict) and date_obj.get("start"):
         candidates.append(date_obj.get("start"))
         
-    # 2. 公式 Formula 欄位
     formula = prop_info.get("formula")
     if isinstance(formula, dict):
         if isinstance(formula.get("string"), str):
@@ -42,7 +43,6 @@ def extract_date_from_prop(prop_info):
             if isinstance(v, str) and len(v) >= 8:
                 candidates.append(v)
                 
-    # 3. 彙整 Rollup 欄位
     rollup = prop_info.get("rollup")
     if isinstance(rollup, dict):
         r_type = rollup.get("type")
@@ -60,7 +60,6 @@ def extract_date_from_prop(prop_info):
                     if item.get("start"):
                         candidates.append(item.get("start"))
 
-    # 4. 其他任何可能的屬性字串
     for k, v in prop_info.items():
         if isinstance(v, str) and len(v) >= 8:
             candidates.append(v)
@@ -69,7 +68,6 @@ def extract_date_from_prop(prop_info):
                 if isinstance(sub_v, str) and len(sub_v) >= 8:
                     candidates.append(sub_v)
 
-    # 🌟 強化版日期解析核心（透過 Regex 濾除前面的燈號或文字，直接抓取 YYYY-MM-DD）
     for date_str in candidates:
         if not date_str:
             continue
@@ -84,8 +82,9 @@ def extract_date_from_prop(prop_info):
 
 
 def run_daily_alert():
-    print(f"\n================ [{datetime.now().strftime('%Y-%m-%d %H:%M:%S' )}] 開始執行檢查 ================")
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    now_tw = datetime.now(TW_TZ)
+    print(f"\n================ [{now_tw.strftime('%Y-%m-%d %H:%M:%S' )}] 開始執行檢查 ================")
+    today = now_tw.replace(hour=0, minute=0, second=0, microsecond=0)
     tasks = []
 
     # 1. 查詢工程時程進度資料庫 (PROGRESS_DB_ID)
@@ -128,7 +127,6 @@ def run_daily_alert():
             if status == "已完成": 
                 continue
 
-            # 🛠️ 邏輯：只要「相關收發文歷程」有資料，就交由收發文資料庫管控，工程不重複發警示
             has_related_docs = False
             rel_prop = props.get("相關收發文歷程")
             if rel_prop and isinstance(rel_prop, dict):
@@ -138,7 +136,6 @@ def run_daily_alert():
             if has_related_docs:
                 continue 
 
-            # 🛠️ 鎖定「契約規定完成日」
             due_date = None
             for key in ["契約規定完成日", "契約完成日", "合約期限"]:
                 if key in props:
@@ -148,6 +145,7 @@ def run_daily_alert():
 
             if due_date:
                 diff_days = (due_date - today).days
+                print(f"👉 [工程檢查] 項目: {title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
                 tasks.append({
                     "title": f"[工程] {title}", 
                     "due_date": due_date.strftime("%Y-%m-%d"), 
@@ -165,6 +163,7 @@ def run_daily_alert():
             payload = {"start_cursor": start_cursor} if start_cursor else {}
             res = requests.post(reply_url, headers=notion_headers, json=payload)
             if res.status_code != 200: 
+                print(f"⚠️ 讀取收發文資料庫失敗，狀態碼: {res.status_code}, 內容: {res.text}")
                 break
             data = res.json()
             reply_pages.extend(data.get("results", []))
@@ -215,6 +214,7 @@ def run_daily_alert():
                             break
 
                 display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
+                print(f"👉 [收發文檢查] 項目: {display_title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
                 tasks.append({
                     "title": display_title,
                     "due_date": due_date.strftime("%Y-%m-%d"),
