@@ -1,7 +1,6 @@
 from datetime import datetime
 import os
 import requests
-from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi, PushMessageRequest, TextMessage
 
 # ----------------- 環境變數與設定 -----------------
@@ -196,16 +195,18 @@ def run_daily_alert():
                     break
 
             status = ""
-            if "文件狀態" in props and props["文件狀態"] is not None:
-                status_obj = props.get("文件狀態", {})
-                if isinstance(status_obj, dict):
-                    sel = status_obj.get("select")
-                    if isinstance(sel, dict):
-                        status = sel.get("name", "") or ""
+            for key in ["文件狀態", "狀態"]:
+                if key in props and props[key] is not None:
+                    status_obj = props.get(key, {})
+                    if isinstance(status_obj, dict):
+                        sel = status_obj.get("select")
+                        if isinstance(sel, dict):
+                            status = sel.get("name", "") or ""
+                            break
             if status == "已完成":
                 continue
 
-            # 🆕 新增邏輯：若「續辦文」欄位已設關聯，則取消該筆限辦日期的到逾期警示
+            # 若「續辦文」或「後續辦理文」欄位已設關聯，則取消該筆限辦日期的到逾期警示
             cancel_reply_alert = False
             for rel_key in ["續辦文", "後續辦理文"]:
                 if rel_key in props and props[rel_key] is not None:
@@ -239,12 +240,14 @@ def run_daily_alert():
                     diff_days = (due_date - today).days
                     
                     doc_number = ""
-                    if "正式文號" in props and props["正式文號"] is not None:
-                        doc_num_prop = props.get("正式文號", {})
-                        if isinstance(doc_num_prop, dict):
-                            rt = doc_num_prop.get("rich_text", [])
-                            if rt and len(rt) > 0 and isinstance(rt[0], dict):
-                                doc_number = rt[0].get("text", {}).get("content", "")
+                    for key in ["正式文號", "文號"]:
+                        if key in props and props[key] is not None:
+                            doc_num_prop = props.get(key, {})
+                            if isinstance(doc_num_prop, dict):
+                                rt = doc_num_prop.get("rich_text", [])
+                                if rt and len(rt) > 0 and isinstance(rt[0], dict):
+                                    doc_number = rt[0].get("text", {}).get("content", "")
+                                    break
 
                     display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
                     tasks.append({
