@@ -1,10 +1,10 @@
-name: Daily Schedule Alert
+name: run-alert
 
 on:
   schedule:
-    # 每天早上 0:00 UTC 執行 (等於台灣時間早上 8:00)
-    - cron: '0 0 * * *'
-  workflow_dispatch: # 讓您可以隨時在 GitHub 網頁手動按鈕測試
+    # 台灣時間每天早上 9:00 (UTC 1:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch:
 
 jobs:
   run-alert:
@@ -20,12 +20,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests line-bot-sdk
+          python -m pip install --upgrade pip
+          pip install requests line-bot-sdk google-genai flask
 
-      - name: Run Alert Script
+      - name: Run check_alert.py
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           PROGRESS_DB_ID: ${{ secrets.PROGRESS_DB_ID }}
           REPLY_DB_ID: ${{ secrets.REPLY_DB_ID }}
           ALERT_GROUP_ID: ${{ secrets.ALERT_GROUP_ID }}
