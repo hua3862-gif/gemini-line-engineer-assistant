@@ -18,7 +18,6 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_TOKEN) 
 
-# 群組 ID 設定
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -103,54 +102,33 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            status = "未開始"
-            for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
-                if key in props:
-                    prop_val = props.get(key)
-                    if prop_val and isinstance(prop_val, dict):
-                        select_dict = prop_val.get("select")
-                        if select_dict and isinstance(select_dict, dict):
-                            status = select_dict.get("name", "未開始") or "未開始"
-                    break
-                    
-            if status == "已完成": 
-                continue
+            # ==========================================
+            # 💡 【防呆限制區塊】：目前全部加上 # 備註不執行
+            # 等測試完確定會發報警後，若想恢復再把 # 拿掉
+            # ==========================================
+            
+            # 檢查 1：進度狀態是否已完成 (目前不執行)
+            # status = ""
+            # if "進度狀態" in props:
+            #     status_prop = props.get("進度狀態")
+            #     if status_prop and isinstance(status_prop, dict):
+            #         if status_prop.get("type") == "status" and status_prop.get("status"):
+            #             status = status_prop["status"].get("name", "")
+            #         elif status_prop.get("type") == "select" and status_prop.get("select"):
+            #             status = status_prop["select"].get("name", "")
+            # if status == "已完成":
+            #     continue
 
-            # 防呆機制：檢查關聯的收發文狀態
-            cancel_alert = False
-            related_docs = props.get("桃園棕線時程管理", {}).get("relation", [])
-            if related_docs and isinstance(related_docs, list):
-                for doc in related_docs:
-                    doc_id = doc.get("id")
-                    if not doc_id:
-                        continue
-                    try:
-                        doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
-                        if doc_page_res.status_code == 200:
-                            doc_props = doc_page_res.json().get("properties", {})
-                            doc_type_prop = doc_props.get("收/発文") or doc_props.get("收/發文")
-                            doc_type = ""
-                            if doc_type_prop and isinstance(doc_type_prop, dict):
-                                select_s = doc_type_prop.get("select")
-                                if select_s and isinstance(select_s, dict):
-                                    doc_type = select_s.get("name", "")
-                            
-                            if doc_type == "發文":
-                                cancel_alert = True
-                                break
-                            
-                            if doc_type == "收文":
-                                follow_up_prop = doc_props.get("續辦文") or doc_props.get("後續辦理文")
-                                if follow_up_prop and isinstance(follow_up_prop, dict):
-                                    follow_up_docs = follow_up_prop.get("relation", [])
-                                    if follow_up_docs:
-                                        cancel_alert = True
-                                        break
-                    except Exception:
-                        pass
-
-            if cancel_alert:
-                continue
+            # 檢查 2：是否有關聯收發文 (目前不執行)
+            # has_linked_doc = False
+            # if "相關收發文歷程" in props:
+            #     rel_prop = props.get("相關收發文歷程")
+            #     if rel_prop and isinstance(rel_prop, dict) and rel_prop.get("type") == "relation":
+            #         if rel_prop.get("relation", []):
+            #             has_linked_doc = True
+            # if has_linked_doc:
+            #     continue
+            # ==========================================
 
             # 日期計算：優先抓取欄位，若公式回傳 None 則改由「前置事件核定日 + 相對天數」自行計算
             due_date = None
@@ -177,6 +155,8 @@ def run_check():
 
             if due_date:
                 diff_days = (due_date - today).days
+                # 印出檢查紀錄供 Log 參考
+                print(f"👉 項目: {title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
                 tasks.append({
                     "title": f"[工程] {title}", 
                     "due_date": due_date.strftime("%Y-%m-%d"), 
@@ -209,16 +189,6 @@ def run_check():
                     if title_array:
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
-
-            status = ""
-            if "文件狀態" in props:
-                st_prop = props.get("文件狀態")
-                if st_prop and isinstance(st_prop, dict):
-                    sel_st = st_prop.get("select")
-                    if sel_st and isinstance(sel_st, dict):
-                        status = sel_st.get("name", "") or ""
-            if status == "已完成":
-                continue
 
             due_date = None
             if "限辦日期" in props:
