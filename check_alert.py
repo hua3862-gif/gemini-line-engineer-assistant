@@ -33,21 +33,9 @@ def extract_date_from_prop(prop_info):
         return None
     
     candidates = []
-    
-    def search_dict(d):
-        if isinstance(d, dict):
-            for k, v in d.items():
-                if k in ["start", "string", "content", "date"] and isinstance(v, str):
-                    candidates.append(v)
-                elif isinstance(v, (dict, list)):
-                    search_dict(v)
-        elif isinstance(d, list):
-            for item in d:
-                search_dict(item)
-
-    search_dict(prop_info)
-    
     p_type = prop_info.get("type")
+    
+    # 專門針對 Notion API 回傳的公式、日期、彙整等型態進行解析
     if p_type == "date" and prop_info.get("date"):
         d_val = prop_info["date"]
         if isinstance(d_val, dict) and d_val.get("start"):
@@ -56,19 +44,25 @@ def extract_date_from_prop(prop_info):
     elif p_type == "formula" and prop_info.get("formula"):
         f_val = prop_info["formula"]
         if isinstance(f_val, dict):
-            if f_val.get("type") == "string" and f_val.get("string"):
+            f_sub_type = f_val.get("type")
+            if f_sub_type == "string" and f_val.get("string"):
                 candidates.append(f_val["string"])
-            elif f_val.get("type") == "date" and f_val.get("date"):
+            elif f_sub_type == "date" and f_val.get("date"):
                 d_obj = f_val["date"]
                 if isinstance(d_obj, dict) and d_obj.get("start"):
                     candidates.append(d_obj["start"])
-                    
+            elif f_sub_type == "number" and f_val.get("number"):
+                candidates.append(str(f_val["number"]))
+            candidates.append(str(f_val))
+            
     elif p_type == "rollup" and prop_info.get("rollup"):
         r_val = prop_info["rollup"]
         if isinstance(r_val, dict):
             r_type = r_val.get("type")
             if r_type == "date" and r_val.get("date"):
                 candidates.append(r_val["date"])
+            elif r_type == "string" and r_val.get("string"):
+                candidates.append(r_val["string"])
             elif r_type == "array" and isinstance(r_val.get("array"), list):
                 for item in r_val["array"]:
                     sub_date = extract_date_from_prop(item)
@@ -78,14 +72,30 @@ def extract_date_from_prop(prop_info):
                         else:
                             candidates.append(str(sub_date))
 
+    # 通用遞迴備份掃描
+    def search_dict(d):
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k in ["start", "string", "content", "date", "formula", "rollup"] and isinstance(v, (str, int, float)):
+                    candidates.append(str(v))
+                elif isinstance(v, (dict, list)):
+                    search_dict(v)
+        elif isinstance(d, list):
+            for item in d:
+                search_dict(item)
+
+    search_dict(prop_info)
+
     for date_str in candidates:
         if not date_str:
             continue
         cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
-        match = re.search(r'\d{4}-\d{2}-\d{2}', cleaned)
+        match = re.search(r'\d{4}-\d{1,2}-\d{1,2}', cleaned)
         if match:
             try:
-                return datetime.strptime(match.group(0), "%Y-%m-%d")
+                parts = match.group(0).split('-')
+                formatted_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                return datetime.strptime(formatted_date, "%Y-%m-%d")
             except ValueError:
                 continue
     return None
@@ -97,6 +107,7 @@ def run_check():
 
     print(f"================== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ==================")
 
+    # 1. 查詢工程時程進度資料庫 (PROGRESS_DB_ID)
     if PROGRESS_DB_ID:
         url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
         all_pages = []
@@ -116,13 +127,6 @@ def run_check():
 
         print(f"工程時程資料庫總共撈取到 {len(all_pages)} 筆頁面。")
 
-        # 💡 除錯用：印出第一筆資料的所有欄位名稱與型態，讓我們先睹為快
-        if all_pages:
-            sample_props = all_pages[0].get("properties", {})
-            print("🔍 【Notion 欄位名稱檢視】：")
-            for k, v in sample_props.items():
-                print(f"   - 欄位名稱: 「{k}」 (型態: {v.get('type')})")
-
         for page in all_pages:
             props = page.get("properties", {})
             title = "無標題"
@@ -133,37 +137,14 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 尋找所有可能的日期欄位
+            # 🎯 核心修改：只看「契約規定完成日」
             due_date = None
-            for key in ["預計完成日", "契約規定完成日", "契約完成日", "合約期限", "完成日期", "期限"]:
-                if key in props:
-                    extracted = extract_date_from_prop(props.get(key))
-                    if extracted:
-                        due_date = extracted
-                        break
-
-            if not due_date:
-                pre_date = None
-                for pre_key in ["前置事件核定日", "核定日期", "前置核定日"]:
-                    if pre_key in props:
-                        pre_date = extract_date_from_prop(props.get(pre_key))
-                        if pre_date:
-                            break
-                
-                rel_days = 0
-                for day_key in ["相對天數(NTP+天)", "相對天數", "天數"]:
-                    if day_key in props:
-                        num_prop = props.get(day_key)
-                        if isinstance(num_prop, dict) and num_prop.get("type") == "number":
-                            rel_days = num_prop.get("number") or 0
-                            break
-                
-                if pre_date and rel_days is not None:
-                    due_date = pre_date + timedelta(days=int(rel_days))
+            if "契約規定完成日" in props:
+                due_date = extract_date_from_prop(props.get("契約規定完成日"))
 
             if due_date:
                 diff_days = (due_date - today).days
-                print(f"👉 項目: {title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
+                print(f"👉 [工程] 項目: {title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
                 tasks.append({
                     "title": f"[工程] {title}", 
                     "due_date": due_date.strftime("%Y-%m-%d"), 
@@ -198,24 +179,19 @@ def run_check():
                     break
 
             due_date = None
-            for key in ["限辦日期", "辦理期限", "到期日"]:
-                if key in props:
-                    due_date = extract_date_from_prop(props.get(key))
-                    if due_date:
-                        break
+            if "限辦日期" in props:
+                due_date = extract_date_from_prop(props.get("限辦日期"))
 
             if due_date:
                 diff_days = (due_date - today).days
                 
                 doc_number = ""
-                for num_key in ["正式文號", "文號", "發文字號"]:
-                    if num_key in props:
-                        rt_prop = props.get(num_key)
-                        if rt_prop and isinstance(rt_prop, dict):
-                            rt = rt_prop.get("rich_text", [])
-                            if rt and isinstance(rt, list):
-                                doc_number = rt[0].get("text", {}).get("content", "")
-                                break
+                if "正式文號" in props:
+                    rt_prop = props.get("正式文號")
+                    if rt_prop and isinstance(rt_prop, dict):
+                        rt = rt_prop.get("rich_text", [])
+                        if rt and isinstance(rt, list):
+                            doc_number = rt[0].get("text", {}).get("content", "")
 
                 display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
                 tasks.append({
