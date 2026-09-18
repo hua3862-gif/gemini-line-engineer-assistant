@@ -1,8 +1,6 @@
 from datetime import datetime, timedelta
 import os
 import re
-from google import genai
-from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
@@ -39,7 +37,7 @@ def extract_date_from_prop(prop_info):
     def search_dict(d):
         if isinstance(d, dict):
             for k, v in d.items():
-                if k in ["start", "string", "content"] and isinstance(v, str):
+                if k in ["start", "string", "content", "date"] and isinstance(v, str):
                     candidates.append(v)
                 elif isinstance(v, (dict, list)):
                     search_dict(v)
@@ -49,9 +47,36 @@ def extract_date_from_prop(prop_info):
 
     search_dict(prop_info)
     
-    if prop_info.get("type") == "date" and prop_info.get("date"):
-        if prop_info["date"].get("start"):
-            candidates.append(prop_info["date"]["start"])
+    p_type = prop_info.get("type")
+    if p_type == "date" and prop_info.get("date"):
+        d_val = prop_info["date"]
+        if isinstance(d_val, dict) and d_val.get("start"):
+            candidates.append(d_val["start"])
+            
+    elif p_type == "formula" and prop_info.get("formula"):
+        f_val = prop_info["formula"]
+        if isinstance(f_val, dict):
+            if f_val.get("type") == "string" and f_val.get("string"):
+                candidates.append(f_val["string"])
+            elif f_val.get("type") == "date" and f_val.get("date"):
+                d_obj = f_val["date"]
+                if isinstance(d_obj, dict) and d_obj.get("start"):
+                    candidates.append(d_obj["start"])
+                    
+    elif p_type == "rollup" and prop_info.get("rollup"):
+        r_val = prop_info["rollup"]
+        if isinstance(r_val, dict):
+            r_type = r_val.get("type")
+            if r_type == "date" and r_val.get("date"):
+                candidates.append(r_val["date"])
+            elif r_type == "array" and isinstance(r_val.get("array"), list):
+                for item in r_val["array"]:
+                    sub_date = extract_date_from_prop(item)
+                    if sub_date:
+                        if isinstance(sub_date, datetime):
+                            candidates.append(sub_date.strftime("%Y-%m-%d"))
+                        else:
+                            candidates.append(str(sub_date))
 
     for date_str in candidates:
         if not date_str:
@@ -72,7 +97,6 @@ def run_check():
 
     print(f"================== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ==================")
 
-    # 1. 查詢工程時程進度資料庫 (PROGRESS_DB_ID)
     if PROGRESS_DB_ID:
         url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
         all_pages = []
@@ -92,6 +116,13 @@ def run_check():
 
         print(f"工程時程資料庫總共撈取到 {len(all_pages)} 筆頁面。")
 
+        # 💡 除錯用：印出第一筆資料的所有欄位名稱與型態，讓我們先睹為快
+        if all_pages:
+            sample_props = all_pages[0].get("properties", {})
+            print("🔍 【Notion 欄位名稱檢視】：")
+            for k, v in sample_props.items():
+                print(f"   - 欄位名稱: 「{k}」 (型態: {v.get('type')})")
+
         for page in all_pages:
             props = page.get("properties", {})
             title = "無標題"
@@ -102,37 +133,9 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # ==========================================
-            # 💡 【防呆限制區塊】：目前全部加上 # 備註不執行
-            # 等測試完確定會發報警後，若想恢復再把 # 拿掉
-            # ==========================================
-            
-            # 檢查 1：進度狀態是否已完成 (目前不執行)
-            # status = ""
-            # if "進度狀態" in props:
-            #     status_prop = props.get("進度狀態")
-            #     if status_prop and isinstance(status_prop, dict):
-            #         if status_prop.get("type") == "status" and status_prop.get("status"):
-            #             status = status_prop["status"].get("name", "")
-            #         elif status_prop.get("type") == "select" and status_prop.get("select"):
-            #             status = status_prop["select"].get("name", "")
-            # if status == "已完成":
-            #     continue
-
-            # 檢查 2：是否有關聯收發文 (目前不執行)
-            # has_linked_doc = False
-            # if "相關收發文歷程" in props:
-            #     rel_prop = props.get("相關收發文歷程")
-            #     if rel_prop and isinstance(rel_prop, dict) and rel_prop.get("type") == "relation":
-            #         if rel_prop.get("relation", []):
-            #             has_linked_doc = True
-            # if has_linked_doc:
-            #     continue
-            # ==========================================
-
-            # 日期計算：優先抓取欄位，若公式回傳 None 則改由「前置事件核定日 + 相對天數」自行計算
+            # 尋找所有可能的日期欄位
             due_date = None
-            for key in ["預計完成日", "契約規定完成日", "契約完成日", "合約期限"]:
+            for key in ["預計完成日", "契約規定完成日", "契約完成日", "合約期限", "完成日期", "期限"]:
                 if key in props:
                     extracted = extract_date_from_prop(props.get(key))
                     if extracted:
@@ -141,21 +144,25 @@ def run_check():
 
             if not due_date:
                 pre_date = None
-                if "前置事件核定日" in props:
-                    pre_date = extract_date_from_prop(props.get("前置事件核定日"))
+                for pre_key in ["前置事件核定日", "核定日期", "前置核定日"]:
+                    if pre_key in props:
+                        pre_date = extract_date_from_prop(props.get(pre_key))
+                        if pre_date:
+                            break
                 
                 rel_days = 0
-                if "相對天數(NTP+天)" in props:
-                    num_prop = props.get("相對天數(NTP+天)")
-                    if isinstance(num_prop, dict) and num_prop.get("type") == "number":
-                        rel_days = num_prop.get("number") or 0
+                for day_key in ["相對天數(NTP+天)", "相對天數", "天數"]:
+                    if day_key in props:
+                        num_prop = props.get(day_key)
+                        if isinstance(num_prop, dict) and num_prop.get("type") == "number":
+                            rel_days = num_prop.get("number") or 0
+                            break
                 
                 if pre_date and rel_days is not None:
                     due_date = pre_date + timedelta(days=int(rel_days))
 
             if due_date:
                 diff_days = (due_date - today).days
-                # 印出檢查紀錄供 Log 參考
                 print(f"👉 項目: {title} | 到期日: {due_date.strftime('%Y-%m-%d')} | 剩餘天數: {diff_days}")
                 tasks.append({
                     "title": f"[工程] {title}", 
@@ -191,19 +198,24 @@ def run_check():
                     break
 
             due_date = None
-            if "限辦日期" in props:
-                due_date = extract_date_from_prop(props.get("限辦日期"))
+            for key in ["限辦日期", "辦理期限", "到期日"]:
+                if key in props:
+                    due_date = extract_date_from_prop(props.get(key))
+                    if due_date:
+                        break
 
             if due_date:
                 diff_days = (due_date - today).days
                 
                 doc_number = ""
-                if "正式文號" in props:
-                    rt_prop = props.get("正式文號")
-                    if rt_prop and isinstance(rt_prop, dict):
-                        rt = rt_prop.get("rich_text", [])
-                        if rt and isinstance(rt, list):
-                            doc_number = rt[0].get("text", {}).get("content", "")
+                for num_key in ["正式文號", "文號", "發文字號"]:
+                    if num_key in props:
+                        rt_prop = props.get(num_key)
+                        if rt_prop and isinstance(rt_prop, dict):
+                            rt = rt_prop.get("rich_text", [])
+                            if rt and isinstance(rt, list):
+                                doc_number = rt[0].get("text", {}).get("content", "")
+                                break
 
                 display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
                 tasks.append({
