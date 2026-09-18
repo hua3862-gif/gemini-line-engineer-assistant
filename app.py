@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import json
 import os
+import re
 from flask import Flask, abort, request
 from google import genai
 from google.genai import types  # 用於處理圖片格式
@@ -42,6 +43,43 @@ notion_headers = {
     "Notion-Version": "2022-06-28",
     "Content-Type": "application/json",
 }
+
+# ----------------- 輔助函式：強效日期解析器 -----------------
+def extract_date_from_prop(prop_info):
+    """從 Notion 屬性結構中安全擷取日期字串並轉為 datetime 物件"""
+    if not prop_info or not isinstance(prop_info, dict):
+        return None
+    
+    candidates = []
+    
+    def search_dict(d):
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if k in ["start", "string", "content"] and isinstance(v, str):
+                    candidates.append(v)
+                elif isinstance(v, (dict, list)):
+                    search_dict(v)
+        elif isinstance(d, list):
+            for item in d:
+                search_dict(item)
+
+    search_dict(prop_info)
+    
+    if prop_info.get("type") == "date" and prop_info.get("date"):
+        if prop_info["date"].get("start"):
+            candidates.append(prop_info["date"]["start"])
+
+    for date_str in candidates:
+        if not date_str:
+            continue
+        cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
+        match = re.search(r'\d{4}-\d{2}-\d{2}', cleaned)
+        if match:
+            try:
+                return datetime.strptime(match.group(0), "%Y-%m-%d")
+            except ValueError:
+                continue
+    return None
 
 # ----------------- 根目錄與 LINE Webhook 接收點 -----------------
 @app.route("/", methods=["GET"])
@@ -201,7 +239,7 @@ def check_schedule():
             props = page.get("properties", {})
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val and isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                if prop_val.get("type") == "title":
                     title_array = prop_val.get("title", [])
                     if title_array:
                         title = title_array[0].get("text", {}).get("content", "無標題")
@@ -209,106 +247,63 @@ def check_schedule():
 
             status = "未開始"
             for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
-                if key in props and props[key] is not None:
-                    status_obj = props.get(key)
-                    if isinstance(status_obj, dict):
-                        sel = status_obj.get("select")
-                        if isinstance(sel, dict):
-                            status = sel.get("name", "未開始") or "未開始"
-                            break
+                if key in props:
+                    status = (props.get(key, {}).get("select", {}).get("name", "未開始")) or "未開始"
+                    break
                     
             if status == "已完成": 
                 continue
 
-            # 防呆機制 (已將欄位名稱更新為「桃園棕線時程管理」與「續辦文」)
+            # 防呆機制
             cancel_alert = False
-            rel_prop = props.get("桃園棕線時程管理")
-            if rel_prop and isinstance(rel_prop, dict):
-                related_docs = rel_prop.get("relation", [])
-                for doc in related_docs:
-                    if not isinstance(doc, dict):
-                        continue
-                    doc_id = doc.get("id")
-                    if not doc_id:
-                        continue
-                    try:
-                        doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
-                        if doc_page_res.status_code == 200:
-                            doc_props = doc_page_res.json().get("properties", {})
-                            
-                            type_prop = doc_props.get("收/發文")
-                            doc_type = ""
-                            if type_prop and isinstance(type_prop, dict):
-                                sel = type_prop.get("select")
-                                if isinstance(sel, dict):
-                                    doc_type = sel.get("name", "") or ""
-                            
-                            if doc_type == "發文":
+            related_docs = props.get("相關收發文歷程", {}).get("relation", [])
+            for doc in related_docs:
+                doc_id = doc["id"]
+                try:
+                    doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
+                    if doc_page_res.status_code == 200:
+                        doc_props = doc_page_res.json().get("properties", {})
+                        doc_type = doc_props.get("收/發文", {}).get("select", {}).get("name", "")
+                        
+                        if doc_type == "發文":
+                            cancel_alert = True
+                            break
+                        
+                        if doc_type == "收文":
+                            follow_up_docs = doc_props.get("後續辦理文", {}).get("relation", [])
+                            if follow_up_docs:
                                 cancel_alert = True
                                 break
-                            
-                            if doc_type == "收文":
-                                follow_prop = doc_props.get("續辦文")
-                                if follow_prop and isinstance(follow_prop, dict):
-                                    follow_up_docs = follow_prop.get("relation", [])
-                                    if follow_up_docs:
-                                        cancel_alert = True
-                                        break
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
             if cancel_alert:
                 continue
 
-            c_date, t_date = None, None
-            for key in ["契約規定完成日", "契約完成日"]:
-                if key in props and props[key] is not None:
-                    p_info = props.get(key, {})
-                    if isinstance(p_info, dict):
-                        p_type = p_info.get("type")
-                        if p_type == "date":
-                            date_obj = p_info.get("date")
-                            if isinstance(date_obj, dict):
-                                c_date = date_obj.get("start")
-                        elif p_type == "formula":
-                            form_obj = p_info.get("formula")
-                            if isinstance(form_obj, dict):
-                                date_obj = form_obj.get("date")
-                                if isinstance(date_obj, dict):
-                                    c_date = date_obj.get("start")
-                    break
-                    
-            for key in ["預計完成日", "預計完工日"]:
-                if key in props and props[key] is not None:
-                    p_info = props.get(key, {})
-                    if isinstance(p_info, dict):
-                        p_type = p_info.get("type")
-                        if p_type == "date":
-                            date_obj = p_info.get("date")
-                            if isinstance(date_obj, dict):
-                                t_date = date_obj.get("start")
-                        elif p_type == "formula":
-                            form_obj = p_info.get("formula")
-                            if isinstance(form_obj, dict):
-                                date_obj = form_obj.get("date")
-                                if isinstance(date_obj, dict):
-                                    t_date = date_obj.get("start")
-                    break
-            
-            dates = []
-            if c_date: 
-                try:
-                    dates.append(datetime.strptime(c_date[:10], "%Y-%m-%d"))
-                except Exception:
-                    pass
-            if t_date: 
-                try:
-                    dates.append(datetime.strptime(t_date[:10], "%Y-%m-%d"))
-                except Exception:
-                    pass
-            
-            if dates:
-                due_date = min(dates)
+            # 日期計算：優先抓取欄位，若因公式回傳 None 則改由「前置事件核定日 + 相對天數」自行計算
+            due_date = None
+            for key in ["預計完成日", "契約規定完成日", "契約完成日", "合約期限"]:
+                if key in props:
+                    extracted = extract_date_from_prop(props.get(key))
+                    if extracted:
+                        due_date = extracted
+                        break
+
+            if not due_date:
+                pre_date = None
+                if "前置事件核定日" in props:
+                    pre_date = extract_date_from_prop(props.get("前置事件核定日"))
+                
+                rel_days = 0
+                if "相對天數(NTP+天)" in props:
+                    num_prop = props.get("相對天數(NTP+天)")
+                    if isinstance(num_prop, dict) and num_prop.get("type") == "number":
+                        rel_days = num_prop.get("number") or 0
+                
+                if pre_date and rel_days is not None:
+                    due_date = pre_date + timedelta(days=int(rel_days))
+
+            if due_date:
                 diff_days = (due_date - today).days
                 tasks.append({
                     "title": f"[工程] {title}", 
@@ -337,59 +332,37 @@ def check_schedule():
             props = page.get("properties", {})
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val and isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                if prop_val.get("type") == "title":
                     title_array = prop_val.get("title", [])
                     if title_array:
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
             status = ""
-            if "文件狀態" in props and props["文件狀態"] is not None:
-                status_obj = props.get("文件狀態", {})
-                if isinstance(status_obj, dict):
-                    sel = status_obj.get("select")
-                    if isinstance(sel, dict):
-                        status = sel.get("name", "") or ""
+            if "文件狀態" in props:
+                status = props.get("文件狀態", {}).get("select", {}).get("name", "") or ""
             if status == "已完成":
                 continue
 
-            due_str = None
-            if "限辦日期" in props and props["限辦日期"] is not None:
-                p_info = props.get("限辦日期", {})
-                if isinstance(p_info, dict):
-                    p_type = p_info.get("type")
-                    if p_type == "date":
-                        date_obj = p_info.get("date")
-                        if isinstance(date_obj, dict):
-                            due_str = date_obj.get("start")
-                    elif p_type == "formula":
-                        form_obj = p_info.get("formula")
-                        if isinstance(form_obj, dict):
-                            date_obj = form_obj.get("date")
-                            if isinstance(date_obj, dict):
-                                due_str = date_obj.get("start")
+            due_date = None
+            if "限辦日期" in props:
+                due_date = extract_date_from_prop(props.get("限辦日期"))
 
-            if due_str:
-                try:
-                    due_date = datetime.strptime(due_str[:10], "%Y-%m-%d")
-                    diff_days = (due_date - today).days
-                    
-                    doc_number = ""
-                    if "正式文號" in props and props["正式文號"] is not None:
-                        doc_num_prop = props.get("正式文號", {})
-                        if isinstance(doc_num_prop, dict):
-                            rt = doc_num_prop.get("rich_text", [])
-                            if rt and len(rt) > 0 and isinstance(rt[0], dict):
-                                doc_number = rt[0].get("text", {}).get("content", "")
+            if due_date:
+                diff_days = (due_date - today).days
+                
+                doc_number = ""
+                if "正式文號" in props:
+                    rt = props.get("正式文號", {}).get("rich_text", [])
+                    if rt:
+                        doc_number = rt[0].get("text", {}).get("content", "")
 
-                    display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
-                    tasks.append({
-                        "title": display_title,
-                        "due_date": due_date.strftime("%Y-%m-%d"),
-                        "diff_days": diff_days
-                    })
-                except Exception:
-                    pass
+                display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
+                tasks.append({
+                    "title": display_title,
+                    "due_date": due_date.strftime("%Y-%m-%d"),
+                    "diff_days": diff_days
+                })
 
     # 彙整告警分類
     alerts = {
