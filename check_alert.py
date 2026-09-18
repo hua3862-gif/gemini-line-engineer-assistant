@@ -98,16 +98,8 @@ def get_number_from_prop(prop):
             return arr[0].get("number")
     return None
 
-def fetch_prop_item(page_id, prop_id):
-    """用專屬 endpoint 強制計算並取得屬性值"""
-    url = f"https://api.notion.com/v1/pages/{page_id}/properties/{quote(prop_id)}"
-    res = requests.get(url, headers=notion_headers)
-    if res.status_code != 200:
-        return None
-    return extract_date_from_prop(res.json(), "property_item")
-
 def get_base_date(props):
-    """取得『前置事件核定日』(已擴充支援所有常見關聯公文日期欄位)"""
+    """取得『前置事件核定日』(支援直接填寫或從關聯公文撈取)"""
     prop = props.get("前置事件核定日")
     if not isinstance(prop, dict):
         return None
@@ -129,15 +121,21 @@ def get_base_date(props):
     return None
 
 def calc_contract_due(props):
-    """Python 本地備援計算公式"""
+    """🛠️ 核心修改：強制由 Python 本地以 [前置事件核定日] + [相對天數] 計算到期日，不再信任 Notion 公式欄位"""
+    # 1. 優先檢查是否有直接填寫的「預計完成日」
     d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
     if d:
         return d
 
+    # 2. 否則透過「前置事件核定日」與「相對天數」在本地相加算出
     base = get_base_date(props)
     offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
+    
     if base and offset is not None:
-        return base + timedelta(days=int(offset))
+        calculated_date = base + timedelta(days=int(offset))
+        print(f"    [本地計算] 基準日({base.strftime('%Y-%m-%d')}) + 相對天數({offset}) = 到期日({calculated_date.strftime('%Y-%m-%d')})")
+        return calculated_date
+        
     return None
 
 # ----------------- 主程式 -----------------
@@ -173,16 +171,8 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            due_date = None
-            if "契約規定完成日" in props:
-                # 1. 先用標準解析
-                due_date = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
-                # 2. 如果為空，用 property item 終端強制抓取
-                if not due_date and "id" in props.get("契約規定完成日", {}):
-                    due_date = fetch_prop_item(page["id"], props["契約規定完成日"]["id"])
-                # 3. 如果還是空，用 Python 本地直接算出來！
-                if not due_date:
-                    due_date = calc_contract_due(props)
+            # 強制改用 Python 本地計算，徹底避開 Notion API 讀取公式的漏洞
+            due_date = calc_contract_due(props)
 
             if due_date:
                 diff_days = (due_date - today).days
@@ -192,6 +182,8 @@ def run_check():
                     "due_date": due_date.strftime("%Y-%m-%d"), 
                     "diff_days": diff_days
                 })
+            else:
+                print(f"⚠️ [工程] 項目: {title} 無法計算出有效到期日 (請檢查前置事件或相對天數)")
 
     # 收發文歷程檢查
     if REPLY_DB_ID:
