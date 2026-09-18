@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 import os
 import re
+from urllib.parse import quote
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
@@ -14,7 +15,7 @@ import requests
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_TOKEN) 
+REPLY_DB_ID = os.getenv("REPLY_DB_ID") # 已修正：不再誤抓 TOKEN 當預設值
 
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 
@@ -26,80 +27,134 @@ notion_headers = {
     "Content-Type": "application/json",
 }
 
-# ----------------- 輔助函式：強效日期解析器（含除錯紀錄） -----------------
+_page_cache = {}
+
+def get_page(page_id):
+    if page_id not in _page_cache:
+        res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=notion_headers)
+        _page_cache[page_id] = res.json() if res.status_code == 200 else {}
+    return _page_cache[page_id]
+
+# ----------------- 日期與數字解析輔助函式 -----------------
 def extract_date_from_prop(prop_info, prop_name=""):
-    """終極強效日期解析器：深度穿透 Notion 的 Formula、Rollup 與 Date 結構"""
     if not prop_info or not isinstance(prop_info, dict):
         return None
     
-    candidates = []
-
-    # 遞迴暴力搜尋字典與列表內所有可能的日期字串
-    def deep_search(obj):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k in ["start", "string", "content", "date", "formula", "rollup"] and isinstance(v, (str, int, float)):
-                    candidates.append(str(v))
-                elif isinstance(v, (dict, list)):
-                    deep_search(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                deep_search(item)
-
-    deep_search(prop_info)
-
-    # 針對標準型態額外直接抓取
     p_type = prop_info.get("type")
-    if p_type == "formula":
+    date_str = None
+
+    if p_type == "date":
+        d_val = prop_info.get("date")
+        if isinstance(d_val, dict) and d_val.get("start"):
+            date_str = d_val["start"]
+    elif p_type == "formula":
         f_val = prop_info.get("formula", {})
         if isinstance(f_val, dict):
-            if f_val.get("date") and isinstance(f_val["date"], dict):
-                if f_val["date"].get("start"):
-                    candidates.append(f_val["date"]["start"])
-            if f_val.get("string"):
-                candidates.append(f_val["string"])
-    elif p_type == "date":
-        d_val = prop_info.get("date", {})
-        if isinstance(d_val, dict) and d_val.get("start"):
-            candidates.append(d_val["start"])
+            f_type = f_val.get("type")
+            if f_type == "date" and f_val.get("date") is not None:
+                date_str = f_val["date"].get("start")
+            elif f_type == "string":
+                date_str = f_val.get("string")
+    elif p_type == "rollup":
+        r_val = prop_info.get("rollup", {})
+        if r_val.get("type") == "date" and r_val.get("date"):
+            date_str = r_val["date"].get("start")
+        elif r_val.get("type") == "array":
+            arr = r_val.get("array", [])
+            if arr:
+                return extract_date_from_prop(arr[0], prop_name)
+    elif p_type == "rich_text":
+        rt = prop_info.get("rich_text", [])
+        if rt and isinstance(rt, list):
+            date_str = rt[0].get("text", {}).get("content", "")
 
-    # 🔍 【除錯模式】若欄位名稱包含「契約規定完成日」，把 Notion 回傳的原始結構印出來讓我們看
-    if "契約規定完成日" in prop_name:
-        print(f"  [DEBUG 欄位結構] {prop_name} -> 資料型態: {p_type}, 原始內容: {prop_info}, 抓到的候選值: {candidates}")
+    if not date_str:
+        return None
 
-    for date_str in candidates:
-        if not date_str:
-            continue
-        cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
-        match = re.search(r'\d{4}-\d{1,2}-\d{1,2}', cleaned)
-        if match:
-            try:
-                parts = match.group(0).split('-')
-                formatted_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                return datetime.strptime(formatted_date, "%Y-%m-%d")
-            except ValueError:
-                continue
+    cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
+    match = re.search(r'\d{4}-\d{1,2}-\d{1,2}', cleaned)
+    if match:
+        try:
+            parts = match.group(0).split('-')
+            return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+        except ValueError:
+            return None
     return None
 
-# ----------------- 執行自動檢查與告警主程式 -----------------
+def get_number_from_prop(prop):
+    if not isinstance(prop, dict):
+        return None
+    t = prop.get("type")
+    if t == "number":
+        return prop.get("number")
+    if t == "formula":
+        return prop.get("formula", {}).get("number")
+    if t == "rollup":
+        r = prop.get("rollup", {})
+        if r.get("type") == "number":
+            return r.get("number")
+        arr = r.get("array") or []
+        if arr and arr[0].get("type") == "number":
+            return arr[0].get("number")
+    return None
+
+def fetch_prop_item(page_id, prop_id):
+    """用專屬 endpoint 強制計算並取得屬性值"""
+    url = f"https://api.notion.com/v1/pages/{page_id}/properties/{quote(prop_id)}"
+    res = requests.get(url, headers=notion_headers)
+    if res.status_code != 200:
+        return None
+    return extract_date_from_prop(res.json(), "property_item")
+
+def get_base_date(props):
+    """取得『前置事件核定日』"""
+    prop = props.get("前置事件核定日")
+    if not isinstance(prop, dict):
+        return None
+
+    t = prop.get("type")
+    if t in ("rollup", "formula", "date"):
+        d = extract_date_from_prop(prop, "前置事件核定日")
+        if d:
+            return d
+
+    if t == "relation":
+        for rel in prop.get("relation", []):
+            page = get_page(rel.get("id", ""))
+            rel_props = page.get("properties", {})
+            for b_key in ["核定日", "契約規定完成日", "預計完成日"]:
+                d = extract_date_from_prop(rel_props.get(b_key), b_key)
+                if d:
+                    return d
+    return None
+
+def calc_contract_due(props):
+    """Python 本地備援計算公式"""
+    d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
+    if d:
+        return d
+
+    base = get_base_date(props)
+    offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
+    if base and offset is not None:
+        return base + timedelta(days=int(offset))
+    return None
+
+# ----------------- 主程式 -----------------
 def run_check():
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     tasks = []
 
     print(f"================== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ==================")
 
-    # 1. 查詢工程時程進度資料庫 (PROGRESS_DB_ID)
     if PROGRESS_DB_ID:
         url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
-        all_pages = []
-        has_more = True
-        start_cursor = None
+        all_pages, has_more, start_cursor = [], True, None
         
         while has_more:
             payload = {"start_cursor": start_cursor} if start_cursor else {}
             res = requests.post(url, headers=notion_headers, json=payload)
             if res.status_code != 200: 
-                print(f"⚠️ 讀取工程時程資料庫失敗: {res.text}")
                 break
             data = res.json()
             all_pages.extend(data.get("results", []))
@@ -118,11 +173,16 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 🎯 只看「契約規定完成日」
             due_date = None
             if "契約規定完成日" in props:
+                # 1. 先用標準解析
                 due_date = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
-                print(f"  🔍 檢查項目: [{title}] -> 契約規定完成日解析結果: {due_date.strftime('%Y-%m-%d') if due_date else '❌ 未取得日期'}")
+                # 2. 如果為空，用 property item 終端強制抓取
+                if not due_date and "id" in props.get("契約規定完成日", {}):
+                    due_date = fetch_prop_item(page["id"], props["契約規定完成日"]["id"])
+                # 3. 如果還是空，用 Python 本地直接算出來！
+                if not due_date:
+                    due_date = calc_contract_due(props)
 
             if due_date:
                 diff_days = (due_date - today).days
@@ -133,12 +193,10 @@ def run_check():
                     "diff_days": diff_days
                 })
 
-    # 2. 查詢收發文歷程明細資料庫 (REPLY_DB_ID) 檢查「限辦日期」
+    # 收發文歷程檢查
     if REPLY_DB_ID:
         reply_url = f"https://api.notion.com/v1/databases/{REPLY_DB_ID}/query"
-        reply_pages = []
-        has_more = True
-        start_cursor = None
+        reply_pages, has_more, start_cursor = [], True, None
         
         while has_more:
             payload = {"start_cursor": start_cursor} if start_cursor else {}
@@ -166,7 +224,6 @@ def run_check():
 
             if due_date:
                 diff_days = (due_date - today).days
-                
                 doc_number = ""
                 if "正式文號" in props:
                     rt_prop = props.get("正式文號")
