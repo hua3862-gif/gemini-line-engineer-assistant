@@ -15,7 +15,7 @@ import requests
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-REPLY_DB_ID = os.getenv("REPLY_DB_ID") # 已修正：不再誤抓 TOKEN 當預設值
+REPLY_DB_ID = os.getenv("REPLY_DB_ID")
 
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 
@@ -107,7 +107,7 @@ def fetch_prop_item(page_id, prop_id):
     return extract_date_from_prop(res.json(), "property_item")
 
 def get_base_date(props):
-    """取得『前置事件核定日』"""
+    """取得『前置事件核定日』(已擴充支援所有常見關聯公文日期欄位)"""
     prop = props.get("前置事件核定日")
     if not isinstance(prop, dict):
         return None
@@ -122,7 +122,7 @@ def get_base_date(props):
         for rel in prop.get("relation", []):
             page = get_page(rel.get("id", ""))
             rel_props = page.get("properties", {})
-            for b_key in ["核定日", "契約規定完成日", "預計完成日"]:
+            for b_key in ["核定日", "契約規定完成日", "預計完成日", "最近發文日期", "關聯限辦日期", "發文日期", "限辦日期", "日期"]:
                 d = extract_date_from_prop(rel_props.get(b_key), b_key)
                 if d:
                     return d
