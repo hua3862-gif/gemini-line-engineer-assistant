@@ -103,35 +103,25 @@ def get_number_from_prop(prop):
     return None
 
 def get_base_date(props):
-    """取得基準日：支援從前置事件核定日或關聯頁面（如開工通知日等）深度撈取實際日期"""
-    for key in ["前置事件核定日", "相關收發文歷程", "核定事項說明"]:
+    """取得基準日"""
+    for key in ["前置事件核定日", "核定事項說明"]:
         prop = props.get(key)
         if not isinstance(prop, dict):
             continue
-        
         t = prop.get("type")
         if t in ("rollup", "formula", "date"):
             d = extract_date_from_prop(prop, key)
             if d:
                 return d
-
-        if t == "relation":
-            for rel in prop.get("relation", []):
-                page = get_page(rel.get("id", ""))
-                rel_props = page.get("properties", {})
-                for b_key in ["開工通知日", "限辦日期", "核定日", "契約規定完成日", "預計完成日", "最近發文日期", "發文日期", "日期"]:
-                    d = extract_date_from_prop(rel_props.get(b_key), b_key)
-                    if d:
-                        return d
     return None
 
 def calc_contract_due(props):
-    """計算到期日：支援直接填寫的預計完成日、契約規定完成日，或透過基準日 + 相對天數計算"""
-    d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
+    """計算到期日：優先直接讀取「契約規定完成日」公式欄位，其次為預計完成日，最後透過基準日+相對天數計算"""
+    d = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
     if d:
         return d
 
-    d = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
+    d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
     if d:
         return d
 
@@ -139,52 +129,24 @@ def calc_contract_due(props):
     offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
     
     if base and offset is not None:
-        calculated_date = base + timedelta(days=int(offset))
-        print(f"    [本地計算] 基準日({base.strftime('%Y-%m-%d')}) + 相對天數({offset}) = 到期日({calculated_date.strftime('%Y-%m-%d')})")
-        return calculated_date
+        return base + timedelta(days=int(offset))
         
     return None
 
 def has_related_replies(props, title=""):
-    """檢查該項目是否已辦理（支援狀態、下拉選單、打勾、關聯與文字歷程）並提供終端機除錯"""
-    print(f"  🔍 [檢查排除狀態] 項目: {title}")
-    
-    for key, prop in props.items():
-        if not prop:
-            continue
-        p_type = prop.get("type")
-        
-        # 1. 檢查 Status 或 Select
-        if p_type in ("status", "select"):
-            val = prop.get(p_type, {})
-            val_name = val.get("name", "") if isinstance(val, dict) else str(val)
-            if any(kw in val_name for kw in ["已完成", "結案", "辦畢", "已辦", "存查", "完成"]):
-                print(f"    -> 透過欄位 [{key}] 的狀態/選項「{val_name}」判定為已辦理，排除告警。")
+    """
+    🎯 專屬自動化判定：
+    只要「相關收發文歷程」這個關聯欄位裡面有連結任何項目，
+    就代表該工程項目已辦理過，自動排除不發送告警！
+    """
+    prop = props.get("相關收發文歷程")
+    if prop and isinstance(prop, dict):
+        if prop.get("type") == "relation":
+            rel_list = prop.get("relation", [])
+            if rel_list and len(rel_list) > 0:
+                print(f"  👉 [自動排除] 項目 [{title}] 因「相關收發文歷程」已有關聯公文（共 {len(rel_list)} 筆），判定為已辦理，排除告警。")
                 return True
-
-        # 2. 檢查 Checkbox
-        elif p_type == "checkbox":
-            if prop.get("checkbox") is True:
-                print(f"    -> 透過欄位 [{key}] 已打勾判定為已辦理，排除告警。")
-                return True
-
-        # 3. 檢查關聯與文字歷程
-        if key in ["相關收發文歷程", "最近發文日期", "相關收發文歷程(承辦人所填期程表1)", "備註", "辦理情形"]:
-            if p_type == "relation":
-                if prop.get("relation") and len(prop.get("relation")) > 0:
-                    print(f"    -> 透過關聯欄位 [{key}] 判定已有收發文，排除告警。")
-                    return True
-            elif p_type == "rollup":
-                arr = prop.get("rollup", {}).get("array", [])
-                if arr and len(arr) > 0:
-                    print(f"    -> 透過 Rollup 欄位 [{key}] 判定有內容，排除告警。")
-                    return True
-            elif p_type == "rich_text":
-                rt = prop.get("rich_text", [])
-                if rt and rt[0].get("text", {}).get("content", "").strip():
-                    print(f"    -> 透過文字欄位 [{key}] 有內容判定，排除告警。")
-                    return True
-                    
+                
     return False
 
 # ----------------- 主程式 -----------------
@@ -220,7 +182,7 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 💡 檢查排除條件（如果該項目已辦理，直接跳過）
+            # 💡 檢查排除條件：如果「相關收發文歷程」有內容，直接跳過不發告警
             if has_related_replies(props, title):
                 continue
 
@@ -235,7 +197,7 @@ def run_check():
                     "diff_days": diff_days
                 })
             else:
-                print(f"⚠️ [工程] 項目: {title} 無法計算出有效到期日 (請檢查前置事件或相對天數)")
+                print(f"⚠️ [工程] 項目: {title} 無法計算出有效到期日")
 
     # 收發文歷程檢查
     if REPLY_DB_ID:
