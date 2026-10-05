@@ -61,6 +61,10 @@ def extract_date_from_prop(prop_info, prop_name=""):
             date_str = r_val["date"].get("start")
         elif r_val.get("type") == "array":
             arr = r_val.get("array", [])
+            for item in arr:
+                d = extract_date_from_prop(item, prop_name)
+                if d:
+                    return d
             if arr:
                 return extract_date_from_prop(arr[0], prop_name)
     elif p_type == "rich_text":
@@ -99,35 +103,41 @@ def get_number_from_prop(prop):
     return None
 
 def get_base_date(props):
-    """取得『前置事件核定日』(支援直接填寫或從關聯公文撈取)"""
-    prop = props.get("前置事件核定日")
-    if not isinstance(prop, dict):
-        return None
+    """取得基準日：支援從前置事件核定日或關聯頁面（如開工通知日等）深度撈取實際日期"""
+    for key in ["前置事件核定日", "相關收發文歷程", "核定事項說明"]:
+        prop = props.get(key)
+        if not isinstance(prop, dict):
+            continue
+        
+        t = prop.get("type")
+        if t in ("rollup", "formula", "date"):
+            d = extract_date_from_prop(prop, key)
+            if d:
+                return d
 
-    t = prop.get("type")
-    if t in ("rollup", "formula", "date"):
-        d = extract_date_from_prop(prop, "前置事件核定日")
-        if d:
-            return d
-
-    if t == "relation":
-        for rel in prop.get("relation", []):
-            page = get_page(rel.get("id", ""))
-            rel_props = page.get("properties", {})
-            for b_key in ["核定日", "契約規定完成日", "預計完成日", "最近發文日期", "關聯限辦日期", "發文日期", "限辦日期", "日期"]:
-                d = extract_date_from_prop(rel_props.get(b_key), b_key)
-                if d:
-                    return d
+        if t == "relation":
+            for rel in prop.get("relation", []):
+                page = get_page(rel.get("id", ""))
+                rel_props = page.get("properties", {})
+                for b_key in ["開工通知日", "限辦日期", "核定日", "契約規定完成日", "預計完成日", "最近發文日期", "發文日期", "日期"]:
+                    d = extract_date_from_prop(rel_props.get(b_key), b_key)
+                    if d:
+                        return d
     return None
 
 def calc_contract_due(props):
-    """🛠️ 核心修改：強制由 Python 本地以 [前置事件核定日] + [相對天數] 計算到期日，不再信任 Notion 公式欄位"""
+    """計算到期日：支援直接填寫的預計完成日、契約規定完成日，或透過基準日 + 相對天數計算"""
     # 1. 優先檢查是否有直接填寫的「預計完成日」
     d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
     if d:
         return d
 
-    # 2. 否則透過「前置事件核定日」與「相對天數」在本地相加算出
+    # 2. 其次檢查「契約規定完成日」
+    d = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
+    if d:
+        return d
+
+    # 3. 否則透過「前置事件核定日」與「相對天數」相加算出
     base = get_base_date(props)
     offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
     
@@ -137,6 +147,26 @@ def calc_contract_due(props):
         return calculated_date
         
     return None
+
+def has_related_replies(props):
+    """檢查『相關收發文歷程』是否有內容或關聯公文（若有代表已辦理，應略過告警）"""
+    for key in ["相關收發文歷程", "最近發文日期", "相關收發文歷程(承辦人所填期程表1)", "備註"]:
+        prop = props.get(key)
+        if not prop:
+            continue
+        p_type = prop.get("type")
+        if p_type == "relation":
+            if prop.get("relation") and len(prop.get("relation")) > 0:
+                return True
+        elif p_type == "rollup":
+            arr = prop.get("rollup", {}).get("array", [])
+            if arr and len(arr) > 0:
+                return True
+        elif p_type == "rich_text":
+            rt = prop.get("rich_text", [])
+            if rt and rt[0].get("text", {}).get("content", "").strip():
+                return True
+    return False
 
 # ----------------- 主程式 -----------------
 def run_check():
@@ -171,7 +201,11 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 強制改用 Python 本地計算，徹底避開 Notion API 讀取公式的漏洞
+            # 💡 核心改良：如果該項目已有相關收發文歷程（視為已辦理），直接略過不發送警示
+            if has_related_replies(props):
+                print(f"⏩ [工程] 項目: {title} 已有相關收發文歷程，略過告警檢查。")
+                continue
+
             due_date = calc_contract_due(props)
 
             if due_date:
@@ -231,7 +265,7 @@ def run_check():
                     "diff_days": diff_days
                 })
 
-    # 彙整告警分類（修正為：只要小於 0 天已逾期，全部自動納入清單）
+    # 彙整告警分類
     alerts = {
         "before_7": [], "before_1": [], "today": [], "overdue": []
     }
@@ -272,7 +306,6 @@ def run_check():
     if alerts["overdue"]:
         has_alert = True
         msg_lines.append("\n❌ 已逾期項目:")
-        # 依照逾期天數由多到少排序，讓逾期最久的排在前面
         alerts["overdue"].sort(key=lambda x: x['diff_days'])
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
