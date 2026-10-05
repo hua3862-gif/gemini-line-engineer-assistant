@@ -9,13 +9,13 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定
+# 從環境變數讀取設定 (優先讀取 Render 上的 ALERT_GROUP_ID)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
-NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID")  # 工程時程資料庫 ID
-REPLY_DB_ID = os.environ.get("REPLY_DB_ID")           # 收發文歷程明細資料庫 ID
-LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or os.environ.get("ALERT_GROUP_ID") # 目標群組 ID
+NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID")
+REPLY_DB_ID = os.environ.get("REPLY_DB_ID")
+LINE_GROUP_ID = os.environ.get("ALERT_GROUP_ID") or os.environ.get("LINE_GROUP_ID")
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 NOTION_VERSION = "2022-06-28"
@@ -25,7 +25,6 @@ def extract_date_from_prop(prop_val, prop_name="日期"):
     if not isinstance(prop_val, dict):
         return None
     
-    # 針對 date 型態
     if prop_val.get("type") == "date":
         date_obj = prop_val.get("date")
         if isinstance(date_obj, dict):
@@ -38,8 +37,6 @@ def extract_date_from_prop(prop_val, prop_name="日期"):
                         return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
                     except Exception:
                         pass
-    
-    # 針對 formula 型態
     elif prop_val.get("type") == "formula":
         form_obj = prop_val.get("formula")
         if isinstance(form_obj, dict):
@@ -101,13 +98,12 @@ def check_schedule():
     if not NOTION_TOKEN:
         return "Error: NOTION_TOKEN is missing.", 500
 
-    # 取得台灣時間 (UTC+8)
     tz_taipei = timezone(timedelta(hours=8))
     today = datetime.now(tz_taipei).date()
 
     tasks = []
 
-    # 1. 讀取工程時程資料庫 (若有設定)
+    # 1. 讀取工程時程資料庫
     if NOTION_DB_ID:
         pages = fetch_notion_database(NOTION_DB_ID)
         for page in pages:
@@ -135,7 +131,7 @@ def check_schedule():
                     "diff_days": diff_days
                 })
 
-    # 2. 讀取收發文歷程明細資料庫 (若有設定)
+    # 2. 讀取收發文歷程明細資料庫
     if REPLY_DB_ID:
         reply_pages = fetch_notion_database(REPLY_DB_ID)
         for page in reply_pages:
@@ -148,7 +144,6 @@ def check_schedule():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 檢查條件 A：文件狀態若為「已完成」則跳過
             status_prop = props.get("文件狀態")
             status = ""
             if isinstance(status_prop, dict):
@@ -158,7 +153,6 @@ def check_schedule():
             if status == "已完成":
                 continue
 
-            # 檢查條件 B：續辦文若不為空（已有後續回文），則跳過
             relation_prop = props.get("續辦文")
             has_relation = False
             if isinstance(relation_prop, dict):
@@ -168,7 +162,6 @@ def check_schedule():
             if has_relation:
                 continue
 
-            # 檢查條件 C：取得限辦日期
             due_date = None
             if "限辦日期" in props:
                 due_date = extract_date_from_prop(props.get("限辦日期"), "限辦日期")
@@ -190,7 +183,7 @@ def check_schedule():
                     "diff_days": diff_days
                 })
 
-    # 3. 將任務分類：3天前、2天前、1天前、今日到期、已逾期
+    # 3. 分類任務
     alerts = {
         "before_3": [],
         "before_2": [],
@@ -248,7 +241,7 @@ def check_schedule():
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
 
-    # 5. 發送至 LINE (使用 v3 穩定推送)
+    # 5. 發送至 LINE
     if has_alert and LINE_CHANNEL_ACCESS_TOKEN and LINE_GROUP_ID:
         full_message = "\n".join(msg_lines)
         try:
