@@ -127,17 +127,14 @@ def get_base_date(props):
 
 def calc_contract_due(props):
     """計算到期日：支援直接填寫的預計完成日、契約規定完成日，或透過基準日 + 相對天數計算"""
-    # 1. 優先檢查是否有直接填寫的「預計完成日」
     d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
     if d:
         return d
 
-    # 2. 其次檢查「契約規定完成日」
     d = extract_date_from_prop(props.get("契約規定完成日"), "契約規定完成日")
     if d:
         return d
 
-    # 3. 否則透過「前置事件核定日」與「相對天數」相加算出
     base = get_base_date(props)
     offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
     
@@ -148,24 +145,46 @@ def calc_contract_due(props):
         
     return None
 
-def has_related_replies(props):
-    """檢查『相關收發文歷程』是否有內容或關聯公文（若有代表已辦理，應略過告警）"""
-    for key in ["相關收發文歷程", "最近發文日期", "相關收發文歷程(承辦人所填期程表1)", "備註"]:
-        prop = props.get(key)
+def has_related_replies(props, title=""):
+    """檢查該項目是否已辦理（支援狀態、下拉選單、打勾、關聯與文字歷程）並提供終端機除錯"""
+    print(f"  🔍 [檢查排除狀態] 項目: {title}")
+    
+    for key, prop in props.items():
         if not prop:
             continue
         p_type = prop.get("type")
-        if p_type == "relation":
-            if prop.get("relation") and len(prop.get("relation")) > 0:
+        
+        # 1. 檢查 Status 或 Select
+        if p_type in ("status", "select"):
+            val = prop.get(p_type, {})
+            val_name = val.get("name", "") if isinstance(val, dict) else str(val)
+            if any(kw in val_name for kw in ["已完成", "結案", "辦畢", "已辦", "存查", "完成"]):
+                print(f"    -> 透過欄位 [{key}] 的狀態/選項「{val_name}」判定為已辦理，排除告警。")
                 return True
-        elif p_type == "rollup":
-            arr = prop.get("rollup", {}).get("array", [])
-            if arr and len(arr) > 0:
+
+        # 2. 檢查 Checkbox
+        elif p_type == "checkbox":
+            if prop.get("checkbox") is True:
+                print(f"    -> 透過欄位 [{key}] 已打勾判定為已辦理，排除告警。")
                 return True
-        elif p_type == "rich_text":
-            rt = prop.get("rich_text", [])
-            if rt and rt[0].get("text", {}).get("content", "").strip():
-                return True
+
+        # 3. 檢查關聯與文字歷程
+        if key in ["相關收發文歷程", "最近發文日期", "相關收發文歷程(承辦人所填期程表1)", "備註", "辦理情形"]:
+            if p_type == "relation":
+                if prop.get("relation") and len(prop.get("relation")) > 0:
+                    print(f"    -> 透過關聯欄位 [{key}] 判定已有收發文，排除告警。")
+                    return True
+            elif p_type == "rollup":
+                arr = prop.get("rollup", {}).get("array", [])
+                if arr and len(arr) > 0:
+                    print(f"    -> 透過 Rollup 欄位 [{key}] 判定有內容，排除告警。")
+                    return True
+            elif p_type == "rich_text":
+                rt = prop.get("rich_text", [])
+                if rt and rt[0].get("text", {}).get("content", "").strip():
+                    print(f"    -> 透過文字欄位 [{key}] 有內容判定，排除告警。")
+                    return True
+                    
     return False
 
 # ----------------- 主程式 -----------------
@@ -201,9 +220,8 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 💡 核心改良：如果該項目已有相關收發文歷程（視為已辦理），直接略過不發送警示
-            if has_related_replies(props):
-                print(f"⏩ [工程] 項目: {title} 已有相關收發文歷程，略過告警檢查。")
+            # 💡 檢查排除條件（如果該項目已辦理，直接跳過）
+            if has_related_replies(props, title):
                 continue
 
             due_date = calc_contract_due(props)
