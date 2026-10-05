@@ -231,40 +231,52 @@ def run_check():
                     "diff_days": diff_days
                 })
 
-    # 彙整告警分類
+    # 彙整告警分類（修正為：只要小於 0 天已逾期，全部自動納入清單）
     alerts = {
-        "before_7": [], "before_1": [], "today": [], 
-        "after_3": [], "after_7": [], "after_14": [], "after_monthly": []
+        "before_7": [], "before_1": [], "today": [], "overdue": []
     }
+    
     for t in tasks:
         d = t["diff_days"]
-        if d == 7: alerts["before_7"].append(t)
-        elif d == 1: alerts["before_1"].append(t)
-        elif d == 0: alerts["today"].append(t)
-        elif d == -3: alerts["after_3"].append(t)
-        elif d == -7: alerts["after_7"].append(t)
-        elif d == -14: alerts["after_14"].append(t)
-        elif d < 0 and abs(d) % 30 == 0: alerts["after_monthly"].append(t)
+        if d == 7: 
+            alerts["before_7"].append(t)
+        elif d == 1: 
+            alerts["before_1"].append(t)
+        elif d == 0: 
+            alerts["today"].append(t)
+        elif d < 0: 
+            t['overdue_days'] = abs(d)
+            alerts["overdue"].append(t)
 
     msg_lines = ["📢 【工程時程與公文限辦自動告警】"]
-    labels = [
-        ("before_7", "⏳ 剩餘 1 週"), 
-        ("before_1", "⚠️ 剩餘 1 天"), 
-        ("today", "🚨 今日到期"), 
-        ("after_3", "❌ 已逾期 3 天"), 
-        ("after_7", "❌ 已逾期 1 週"), 
-        ("after_14", "❌ 已逾期 2 週"), 
-        ("after_monthly", "❗ 長期逾期")
-    ]
-    
     has_alert = False
-    for key, label in labels:
-        if alerts[key]:
-            has_alert = True
-            msg_lines.append(f"\n{label}:")
-            for t in alerts[key]: 
-                msg_lines.append(f"• {t['title']} ({t['due_date']})")
-    
+
+    if alerts["before_7"]:
+        has_alert = True
+        msg_lines.append("\n⏳ 剩餘 1 週:")
+        for t in alerts["before_7"]:
+            msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
+
+    if alerts["before_1"]:
+        has_alert = True
+        msg_lines.append("\n⚠️ 剩餘 1 天:")
+        for t in alerts["before_1"]:
+            msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
+
+    if alerts["today"]:
+        has_alert = True
+        msg_lines.append("\n🚨 今日到期:")
+        for t in alerts["today"]:
+            msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
+
+    if alerts["overdue"]:
+        has_alert = True
+        msg_lines.append("\n❌ 已逾期項目:")
+        # 依照逾期天數由多到少排序，讓逾期最久的排在前面
+        alerts["overdue"].sort(key=lambda x: x['diff_days'])
+        for t in alerts["overdue"]:
+            msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
+
     if not has_alert: 
         print("沒有符合條件的即將到期或逾期項目。")
         return
