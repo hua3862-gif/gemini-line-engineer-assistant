@@ -1,221 +1,175 @@
-from datetime import datetime, timedelta
 import os
-import re
-from urllib.parse import quote
-from flask import Flask
-from linebot.v3.messaging import (
-    ApiClient,
-    Configuration,
-    MessagingApi,
-    PushMessageRequest,
-    TextMessage,
-)
 import requests
+from flask import Flask, request
+from datetime import datetime, timezone, timedelta
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# ----------------- 應用程式與環境變數設定 -----------------
 app = Flask(__name__)
 
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
-REPLY_DB_ID = os.getenv("REPLY_DB_ID")
+# 從環境變數讀取設定
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
+NOTION_DB_ID = os.environ.get("NOTION_DB_ID")         # 工程時程資料庫 ID (選填)
+REPLY_DB_ID = os.environ.get("REPLY_DB_ID")           # 收發文歷程明細資料庫 ID (選填)
+LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID")       # 主動推播目標群組/使用者 ID
 
-ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
+handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 
-configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+NOTION_VERSION = "2022-06-28"
 
-notion_headers = {
-    "Authorization": f"Bearer {NOTION_TOKEN}",
-    "Notion-Version": "2022-06-28",
-    "Content-Type": "application/json",
-}
-
-_page_cache = {}
-
-def get_page(page_id):
-    if page_id not in _page_cache:
-        res = requests.get(f"https://api.notion.com/v1/pages/{page_id}", headers=notion_headers)
-        _page_cache[page_id] = res.json() if res.status_code == 200 else {}
-    return _page_cache[page_id]
-
-# ----------------- 日期與數字解析輔助函式 -----------------
-def extract_date_from_prop(prop_info, prop_name=""):
-    if not prop_info or not isinstance(prop_info, dict):
+def extract_date_from_prop(prop_val, prop_name="日期"):
+    """輔助函式：從 Notion 屬性中安全地抓取日期"""
+    if not isinstance(prop_val, dict):
         return None
     
-    p_type = prop_info.get("type")
-    date_str = None
+    # 針對 date 型態
+    if prop_val.get("type") == "date":
+        date_obj = prop_val.get("date")
+        if isinstance(date_obj, dict):
+            date_str = date_obj.get("start")
+            if date_str:
+                try:
+                    return datetime.fromisoformat(date_str).date()
+                except ValueError:
+                    try:
+                        return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        pass
+    
+    # 針對 formula 型態（計算後可能是 date 或 string）
+    elif prop_val.get("type") == "formula":
+        form_obj = prop_val.get("formula")
+        if isinstance(form_obj, dict):
+            if form_obj.get("type") == "date":
+                date_obj = form_obj.get("date")
+                if isinstance(date_obj, dict) and date_obj.get("start"):
+                    try:
+                        return datetime.fromisoformat(date_obj.get("start")).date()
+                    except Exception:
+                        pass
+            elif form_obj.get("type") == "string":
+                date_str = form_obj.get("string")
+                if date_str:
+                    try:
+                        return datetime.strptime(date_str[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        pass
+    return None
 
-    if p_type == "date":
-        d_val = prop_info.get("date")
-        if isinstance(d_val, dict) and d_val.get("start"):
-            date_str = d_val["start"]
-    elif p_type == "formula":
-        f_val = prop_info.get("formula", {})
-        if isinstance(f_val, dict):
-            f_type = f_val.get("type")
-            if f_type == "date" and f_val.get("date") is not None:
-                date_str = f_val["date"].get("start")
-            elif f_type == "string":
-                date_str = f_val.get("string")
-    elif p_type == "rollup":
-        r_val = prop_info.get("rollup", {})
-        if r_val.get("type") == "date" and r_val.get("date"):
-            date_str = r_val["date"].get("start")
-        elif r_val.get("type") == "array":
-            arr = r_val.get("array", [])
-            if arr:
-                return extract_date_from_prop(arr[0], prop_name)
-    elif p_type == "rich_text":
-        rt = prop_info.get("rich_text", [])
-        if rt and isinstance(rt, list) and isinstance(rt[0], dict):
-            date_str = rt[0].get("text", {}).get("content", "")
+def fetch_notion_database(database_id):
+    """查詢 Notion 資料庫的所有分頁"""
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    headers = {
+        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json"
+    }
+    all_pages = []
+    has_more = True
+    start_cursor = None
 
-    if not date_str:
-        return None
-
-    cleaned = str(date_str).strip().replace("年", "-").replace("月", "-").replace("日", "").replace("/", "-")
-    match = re.search(r'\d{4}-\d{1,2}-\d{1,2}', cleaned)
-    if match:
+    while has_more:
+        payload = {}
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+        
         try:
-            parts = match.group(0).split('-')
-            return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
-        except ValueError:
-            return None
-    return None
-
-def get_number_from_prop(prop):
-    if not isinstance(prop, dict):
-        return None
-    t = prop.get("type")
-    if t == "number":
-        return prop.get("number")
-    if t == "formula":
-        return prop.get("formula", {}).get("number")
-    if t == "rollup":
-        r = prop.get("rollup", {})
-        if r.get("type") == "number":
-            return r.get("number")
-        arr = r.get("array") or []
-        if arr and isinstance(arr[0], dict) and arr[0].get("type") == "number":
-            return arr[0].get("number")
-    return None
-
-def get_base_date(props):
-    prop = props.get("前置事件核定日")
-    if not isinstance(prop, dict):
-        return None
-
-    t = prop.get("type")
-    if t in ("rollup", "formula", "date"):
-        d = extract_date_from_prop(prop, "前置事件核定日")
-        if d:
-            return d
-
-    if t == "relation":
-        for rel in prop.get("relation", []):
-            if not isinstance(rel, dict):
-                continue
-            page = get_page(rel.get("id", ""))
-            rel_props = page.get("properties", {})
-            for b_key in ["核定日", "契約規定完成日", "預計完成日", "最近發文日期", "關聯限辦日期", "發文日期", "限辦日期", "日期"]:
-                d = extract_date_from_prop(rel_props.get(b_key), b_key)
-                if d:
-                    return d
-    return None
-
-def calc_contract_due(props):
-    d = extract_date_from_prop(props.get("預計完成日"), "預計完成日")
-    if d:
-        return d
-
-    base = get_base_date(props)
-    offset = get_number_from_prop(props.get("相對天數(NTP+天)"))
-    
-    if base and offset is not None:
-        calculated_date = base + timedelta(days=int(offset))
-        return calculated_date
-        
-    return None
-
-# ----------------- 主檢查邏輯 -----------------
-def run_check():
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    tasks = []
-
-    print(f"================== [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 開始執行檢查 ==================")
-
-    # 1. 工程時程檢查
-    if PROGRESS_DB_ID:
-        url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
-        all_pages, has_more, start_cursor = [], True, None
-        
-        while has_more:
-            payload = {"start_cursor": start_cursor} if start_cursor else {}
-            res = requests.post(url, headers=notion_headers, json=payload)
-            if res.status_code != 200: 
+            response = requests.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                print(f"Notion API 錯誤 ({database_id}): {response.text}")
                 break
-            data = res.json()
+            data = response.json()
             all_pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
+        except Exception as e:
+            print(f"連線 Notion 發生例外: {e}")
+            break
+            
+    return all_pages
 
-        for page in all_pages:
-            props = page.get("properties") or {}
+@app.route("/")
+def home():
+    return "Gemini Line Engineer Assistant is running!"
+
+@app.route("/check-schedule")
+def check_schedule():
+    """定時觸發檢查：掃描工程時程與收發文，並發送密集期限警示至 LINE"""
+    if not NOTION_API_KEY:
+        return "Error: NOTION_API_KEY is missing.", 500
+
+    # 取得台灣時間 (UTC+8)
+    tz_taipei = timezone(timedelta(hours=8))
+    today = datetime.now(tz_taipei).date()
+
+    tasks = []
+
+    # 1. 讀取工程時程資料庫 (若有設定)
+    if NOTION_DB_ID:
+        pages = fetch_notion_database(NOTION_DB_ID)
+        for page in pages:
+            props = page.get("properties", {})
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val and isinstance(prop_val, dict) and prop_val.get("type") == "title":
-                    title_array = prop_val.get("title") or []
+                if isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                    title_array = prop_val.get("title", [])
                     if title_array and isinstance(title_array[0], dict):
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
-
-            due_date = calc_contract_due(props)
-
+            
+            due_date = None
+            for p_name in ["日期", "到期日", "限辦日期", "截止日期"]:
+                if p_name in props:
+                    due_date = extract_date_from_prop(props.get(p_name), p_name)
+                    if due_date:
+                        break
+            
             if due_date:
                 diff_days = (due_date - today).days
                 tasks.append({
-                    "title": f"[工程] {title}", 
-                    "due_date": due_date.strftime("%Y-%m-%d"), 
+                    "title": f"[工程] {title}",
+                    "due_date": due_date.strftime("%Y-%m-%d"),
                     "diff_days": diff_days
                 })
 
-    # 2. 收發文歷程檢查
+    # 2. 讀取收發文歷程明細資料庫 (若有設定)
     if REPLY_DB_ID:
-        reply_url = f"https://api.notion.com/v1/databases/{REPLY_DB_ID}/query"
-        reply_pages, has_more, start_cursor = [], True, None
-        
-        while has_more:
-            payload = {"start_cursor": start_cursor} if start_cursor else {}
-            res = requests.post(reply_url, headers=notion_headers, json=payload)
-            if res.status_code != 200: 
-                break
-            data = res.json()
-            reply_pages.extend(data.get("results", []))
-            has_more = data.get("has_more", False)
-            start_cursor = data.get("next_cursor")
-
+        reply_pages = fetch_notion_database(REPLY_DB_ID)
         for page in reply_pages:
-            props = page.get("properties") or {}
+            props = page.get("properties", {})
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val and isinstance(prop_val, dict) and prop_val.get("type") == "title":
-                    title_array = prop_val.get("title") or []
+                if isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                    title_array = prop_val.get("title", [])
                     if title_array and isinstance(title_array[0], dict):
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 安全取得文件狀態，若為「已完成」則跳過
+            # 檢查條件 A：文件狀態若為「已完成」則跳過
             status_prop = props.get("文件狀態")
             status = ""
             if isinstance(status_prop, dict):
                 select_obj = status_prop.get("select")
                 if isinstance(select_obj, dict):
                     status = select_obj.get("name", "") or ""
-            
             if status == "已完成":
                 continue
 
+            # 檢查條件 B：續辦文若不為空（已有後續回文），則跳過
+            relation_prop = props.get("續辦文")
+            has_relation = False
+            if isinstance(relation_prop, dict):
+                rel_list = relation_prop.get("relation", [])
+                if rel_list and len(rel_list) > 0:
+                    has_relation = True
+            if has_relation:
+                continue
+
+            # 檢查條件 C：取得限辦日期
             due_date = None
             if "限辦日期" in props:
                 due_date = extract_date_from_prop(props.get("限辦日期"), "限辦日期")
@@ -237,35 +191,48 @@ def run_check():
                     "diff_days": diff_days
                 })
 
-    # 3. 彙整告警分類
+    # 3. 將任務分類：3天前、2天前、1天前、今日到期、已逾期
     alerts = {
-        "before_7": [], "before_1": [], "today": [], "overdue": []
+        "before_3": [],
+        "before_2": [],
+        "before_1": [],
+        "today": [],
+        "overdue": []
     }
-    
+
     for t in tasks:
         d = t["diff_days"]
-        if d == 7: 
-            alerts["before_7"].append(t)
-        elif d == 1: 
+        if d == 3:
+            alerts["before_3"].append(t)
+        elif d == 2:
+            alerts["before_2"].append(t)
+        elif d == 1:
             alerts["before_1"].append(t)
-        elif d == 0: 
+        elif d == 0:
             alerts["today"].append(t)
-        elif d < 0: 
+        elif d < 0:
             t['overdue_days'] = abs(d)
             alerts["overdue"].append(t)
 
-    msg_lines = ["📢 【工程時程與公文限辦自動告警】"]
+    # 4. 組裝 LINE 推播訊息
     has_alert = False
+    msg_lines = [f"📊 【工程與收發文管考提醒】\n今天是 {today.strftime('%Y-%m-%d')}"]
 
-    if alerts["before_7"]:
+    if alerts["before_3"]:
         has_alert = True
-        msg_lines.append("\n⏳ 剩餘 1 週:")
-        for t in alerts["before_7"]:
+        msg_lines.append("\n⚠️ 3天後到期:")
+        for t in alerts["before_3"]:
+            msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
+
+    if alerts["before_2"]:
+        has_alert = True
+        msg_lines.append("\n⚠️ 2天後到期:")
+        for t in alerts["before_2"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
     if alerts["before_1"]:
         has_alert = True
-        msg_lines.append("\n⚠️ 剩餘 1 天:")
+        msg_lines.append("\n⚠️ 明天到期:")
         for t in alerts["before_1"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
@@ -282,34 +249,43 @@ def run_check():
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
 
-    if not has_alert: 
-        print("沒有符合條件的即將到期或逾期項目。")
-        return
+    # 5. 發送至 LINE
+    if has_alert and LINE_CHANNEL_ACCESS_TOKEN and LINE_GROUP_ID:
+        full_message = "\n".join(msg_lines)
+        try:
+            line_bot_api.push_message(LINE_GROUP_ID, TextSendMessage(text=full_message))
+            print("LINE 警示推播成功！")
+        except Exception as e:
+            print(f"發送 LINE 訊息失敗: {e}")
+            return f"Error sending LINE message: {e}", 500
 
+    return "OK (Checked successfully)"
+
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers.get('X-Line-Signature', '')
+    body = request.get_data(as_text=True)
+    app.logger.info("Request body: " + body)
     try:
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).push_message(
-                PushMessageRequest(
-                    to=ALERT_GROUP_ID, 
-                    messages=[TextMessage(text="\n".join(msg_lines))]
-                )
+        if handler:
+            handler.handle(body, signature)
+        else:
+            return "Handler not initialized", 500
+    except InvalidSignatureError:
+        return 'Invalid signature', 400
+    return 'OK'
+
+if handler and line_bot_api:
+    @handler.add(MessageEvent, message=TextMessage)
+    def handle_message(event):
+        text = event.message.text.strip()
+        if text == "檢查進度":
+            # 也可以直接在聊天室輸入「檢查進度」來觸發
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="收到！請至瀏覽器或透過定時任務觸發 /check-schedule 來進行完整管考檢查。")
             )
-        print("Alert pushed successfully!")
-    except Exception as e:
-        print(f"Push message failed: {str(e)}")
-
-# ----------------- Flask 路由 -----------------
-@app.route("/")
-def home():
-    return "Line Engineer Assistant is running!", 200
-
-@app.route("/check-schedule")
-def check_schedule_route():
-    try:
-        run_check()
-        return "OK (Checked successfully)", 200
-    except Exception as e:
-        return f"Error: {str(e)}", 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
