@@ -9,13 +9,19 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定 (優先讀取 Render 上的 ALERT_GROUP_ID)
+# 從環境變數讀取設定 (全方位相容 GitHub Secrets / Render 中的各種群組變數名稱)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID")
 REPLY_DB_ID = os.environ.get("REPLY_DB_ID")
-LINE_GROUP_ID = os.environ.get("ALERT_GROUP_ID") or os.environ.get("LINE_GROUP_ID")
+
+# 自動依次檢查常見的群組 ID 變數名稱
+LINE_GROUP_ID = (
+    os.environ.get("ALERT_GROUP_ID") or 
+    os.environ.get("LINE_GROUP_ID") or 
+    os.environ.get("REPAIR_GROUP_ID")
+)
 
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
 NOTION_VERSION = "2022-06-28"
@@ -218,7 +224,7 @@ def check_schedule():
 
     if alerts["before_2"]:
         has_alert = True
-        msg_lines.append("\n⚠️ 2天後到期:")
+        msg_lines.append("\n⚠️️ 2天後到期:")
         for t in alerts["before_2"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
@@ -241,9 +247,10 @@ def check_schedule():
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
 
-    # 5. 發送至 LINE
+    # 5. 發送至 LINE (帶有除錯 Log)
     if has_alert and LINE_CHANNEL_ACCESS_TOKEN and LINE_GROUP_ID:
         full_message = "\n".join(msg_lines)
+        print(f"DEBUG - 準備發送給群組 ID: [{LINE_GROUP_ID}]")
         try:
             configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
             with ApiClient(configuration) as api_client:
