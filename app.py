@@ -2,13 +2,14 @@ import os
 import requests
 from flask import Flask, request
 from datetime import datetime, timezone, timedelta
-from linebot import LineBotApi, WebhookHandler
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, PushMessageRequest, TextMessage as V3TextMessage
+from linebot import WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定 (對應您 Render 上的 NOTION_TOKEN)
+# 從環境變數讀取設定
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
@@ -16,9 +17,7 @@ NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID"
 REPLY_DB_ID = os.environ.get("REPLY_DB_ID")           # 收發文歷程明細資料庫 ID
 LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or os.environ.get("ALERT_GROUP_ID") # 目標群組 ID
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
-
 NOTION_VERSION = "2022-06-28"
 
 def extract_date_from_prop(prop_val, prop_name="日期"):
@@ -40,7 +39,7 @@ def extract_date_from_prop(prop_val, prop_name="日期"):
                     except Exception:
                         pass
     
-    # 針對 formula 型態（計算後可能是 date 或 string）
+    # 針對 formula 型態
     elif prop_val.get("type") == "formula":
         form_obj = prop_val.get("formula")
         if isinstance(form_obj, dict):
@@ -249,11 +248,18 @@ def check_schedule():
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
 
-    # 5. 發送至 LINE
+    # 5. 發送至 LINE (使用 v3 穩定推送)
     if has_alert and LINE_CHANNEL_ACCESS_TOKEN and LINE_GROUP_ID:
         full_message = "\n".join(msg_lines)
         try:
-            line_bot_api.push_message(LINE_GROUP_ID, TextSendMessage(text=full_message))
+            configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).push_message(
+                    PushMessageRequest(
+                        to=LINE_GROUP_ID,
+                        messages=[V3TextMessage(text=full_message)]
+                    )
+                )
             print("LINE 警示推播成功！")
         except Exception as e:
             print(f"發送 LINE 訊息失敗: {e}")
@@ -274,16 +280,6 @@ def callback():
     except InvalidSignatureError:
         return 'Invalid signature', 400
     return 'OK'
-
-if handler and line_bot_api:
-    @handler.add(MessageEvent, message=TextMessage)
-    def handle_message(event):
-        text = event.message.text.strip()
-        if text == "檢查進度":
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="收到！請至瀏覽器或透過定時任務觸發 /check-schedule 來進行完整管考檢查。")
-            )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
