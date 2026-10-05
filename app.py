@@ -4,7 +4,7 @@ import os
 import re
 from flask import Flask, abort, request
 from google import genai
-from google.genai import types  # 用於處理圖片格式
+from google.genai import types
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -15,7 +15,6 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
     TextMessage,
 )
-# 引入圖片訊息的 Content 支援
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, ImageMessageContent 
 import requests
 
@@ -25,13 +24,11 @@ app = Flask(__name__)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID") # 主資料庫 ID
-PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_DATABASE_ID) 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# 雙群組 ID 設定
 ALERT_GROUP_ID = os.getenv("ALERT_GROUP_ID", "C5c0b9ad86a00149bb16b5db6a8d0b622")
 REPAIR_GROUP_ID = os.getenv("REPAIR_GROUP_ID", "Cbb96b6ff1d2d1b609655b4bb7d3948cf")
 
@@ -67,7 +64,7 @@ def extract_date_from_prop(prop_info):
     search_dict(prop_info)
     
     if prop_info.get("type") == "date" and prop_info.get("date"):
-        if prop_info["date"].get("start"):
+        if isinstance(prop_info["date"], dict) and prop_info["date"].get("start"):
             candidates.append(prop_info["date"]["start"])
 
     for date_str in candidates:
@@ -97,7 +94,6 @@ def callback():
         abort(400)
     return "OK"
 
-# 1. 處理文字訊息 (包含快速查詢 ID)
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     text = event.message.text.strip()
@@ -121,7 +117,6 @@ def handle_text_message(event):
             )
         )
 
-# 2. 處理圖片訊息 (使用者直接傳送公文照片)
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     reply_token = event.reply_token
@@ -148,23 +143,19 @@ def process_document_with_ai(content, is_image=False):
     你是一個專業的公共工程文管助理。請從這份公文內容或圖片中擷取以下欄位，並嚴格回傳標準 JSON 格式（不要包覆在 markdown codeblock 中，直接回傳 JSON 即可）：
     {
       "title": "公文主旨摘要",
-      "doc_number": "正式文號 (例如 桃捷棕字第...) ",
-      "sender": "發文單位 (例如 捷運工程局、統包商、監造)",
+      "doc_number": "正式文號",
+      "sender": "發文單位",
       "receiver_main": "正本受文單位",
       "receiver_copy": "副本受文單位",
       "type": "收文 或是 發文",
       "date": "發文日期 (格式 YYYY-MM-DD，若無則填今天)"
     }
     """
-    
     try:
         if is_image:
             response = gemini_client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=[
-                    types.Part.from_bytes(data=content, mime_type="image/jpeg"),
-                    prompt
-                ]
+                contents=[types.Part.from_bytes(data=content, mime_type="image/jpeg"), prompt]
             )
         else:
             response = gemini_client.models.generate_content(
@@ -176,42 +167,28 @@ def process_document_with_ai(content, is_image=False):
         doc_data = json.loads(raw_text)
         
         notion_url = "https://api.notion.com/v1/pages"
-        
         payload = {
             "parent": {"database_id": REPLY_DB_ID},
             "properties": {
-                "title": {
-                    "title": [{"text": {"content": doc_data.get("title", "未命名公文")}}]
+                "title": {"title": [{"text": {"content": doc_data.get("title", "未命名公文")}}]
                 },
-                "正式文號": {
-                    "rich_text": [{"text": {"content": doc_data.get("doc_number", "")}}]
+                "正式文號": {"rich_text": [{"text": {"content": doc_data.get("doc_number", "")}}]
                 },
-                "發文單位": {
-                    "select": {"name": doc_data.get("sender", "專管")}
+                "發文單位": {"select": {"name": doc_data.get("sender", "專管")}},
+                "正本受文單位": {"select": {"name": doc_data.get("receiver_main", "局")}},
+                "副本受文單位": {"rich_text": [{"text": {"content": doc_data.get("receiver_copy", "")}}]
                 },
-                "正本受文單位": {
-                    "select": {"name": doc_data.get("receiver_main", "局")}
-                },
-                "副本受文單位": {
-                    "rich_text": [{"text": {"content": doc_data.get("receiver_copy", "")}}]
-                },
-                "收/發文": {
-                    "select": {"name": doc_data.get("type", "收文")}
-                },
-                "日期": {
-                    "date": {"start": doc_data.get("date", datetime.now().strftime("%Y-%m-%d"))}
-                }
+                "收/發文": {"select": {"name": doc_data.get("type", "收文")}},
+                "日期": {"date": {"start": doc_data.get("date", datetime.now().strftime("%Y-%m-%d"))}}
             }
         }
-        
         res = requests.post(notion_url, headers=notion_headers, json=payload)
         if res.status_code == 200:
-            return f"✅ 成功辨識並自動建檔至 Notion！\n• 主旨：{doc_data.get('title')}\n• 文號：{doc_data.get('doc_number')}\n• 類型：{doc_data.get('type')}"
+            return f"✅ 成功辨識並自動建檔至 Notion！\n• 主旨：{doc_data.get('title')}\n• 文號：{doc_data.get('doc_number')}"
         else:
-            return f"⚠️ AI 解析成功，但寫入 Notion 失敗：{res.text}"
-            
+            return f"⚠️ 寫入 Notion 失敗：{res.text}"
     except Exception as e:
-        return f"❌ 解析或建檔發生錯誤：{str(e)}"
+        return f"❌ 發生錯誤：{str(e)}"
 
 # ----------------- 每日時程與收發文自動檢查路由 -----------------
 @app.route("/check-schedule", methods=["GET"])
@@ -222,27 +199,24 @@ def check_schedule():
     # 1. 查詢工程時程進度資料庫 (PROGRESS_DB_ID)
     if PROGRESS_DB_ID:
         url = f"https://api.notion.com/v1/databases/{PROGRESS_DB_ID}/query"
-        all_pages = []
-        has_more = True
-        start_cursor = None
+        all_pages, has_more, start_cursor = [], True, None
         
         while has_more:
             payload = {"start_cursor": start_cursor} if start_cursor else {}
             res = requests.post(url, headers=notion_headers, json=payload)
-            if res.status_code != 200: 
-                break
+            if res.status_code != 200: break
             data = res.json()
             all_pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
         for page in all_pages:
-            props = page.get("properties", {})
+            props = page.get("properties") or {}
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val.get("type") == "title":
-                    title_array = prop_val.get("title", [])
-                    if title_array:
+                if isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                    title_array = prop_val.get("title") or []
+                    if title_array and isinstance(title_array[0], dict):
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
@@ -251,39 +225,39 @@ def check_schedule():
                 if key in props:
                     prop_obj = props.get(key) or {}
                     select_obj = prop_obj.get("select") or {}
-                    status = select_obj.get("name", "未開始") or "未開始"
+                    status = (select_obj.get("name") if isinstance(select_obj, dict) else None) or "未開始"
                     break
                     
-            if status == "已完成": 
-                continue
+            if status == "已完成": continue
 
-            # 防呆機制
             cancel_alert = False
-            related_docs = props.get("相關收發文歷程", {}).get("relation", [])
-            for doc in related_docs:
-                doc_id = doc["id"]
-                try:
-                    doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
-                    if doc_page_res.status_code == 200:
-                        doc_props = doc_page_res.json().get("properties", {})
-                        doc_type = doc_props.get("收/發文", {}).get("select", {}).get("name", "")
-                        
-                        if doc_type == "發文":
-                            cancel_alert = True
-                            break
-                        
-                        if doc_type == "收文":
-                            follow_up_docs = doc_props.get("後續辦理文", {}).get("relation", [])
-                            if follow_up_docs:
+            related_docs = props.get("相關收發文歷程") or {}
+            if isinstance(related_docs, dict):
+                for doc in (related_docs.get("relation") or []):
+                    doc_id = doc.get("id")
+                    if not doc_id: continue
+                    try:
+                        doc_page_res = requests.get(f"https://api.notion.com/v1/pages/{doc_id}", headers=notion_headers)
+                        if doc_page_res.status_code == 200:
+                            doc_props = doc_page_res.json().get("properties") or {}
+                            
+                            type_prop = doc_props.get("收/發文") or {}
+                            select_box = type_prop.get("select") or {}
+                            doc_type = select_box.get("name") if isinstance(select_box, dict) else ""
+                            
+                            if doc_type == "發文":
                                 cancel_alert = True
                                 break
-                except Exception:
-                    pass
+                            
+                            follow_prop = doc_props.get("後續辦理文") or {}
+                            if (follow_prop.get("relation") or []):
+                                cancel_alert = True
+                                break
+                    except Exception:
+                        pass
 
-            if cancel_alert:
-                continue
+            if cancel_alert: continue
 
-            # 日期計算：優先抓取欄位，若因公式回傳 None 則改由「前置事件核定日 + 相對天數」自行計算
             due_date = None
             for key in ["預計完成日", "契約規定完成日", "契約完成日", "合約期限"]:
                 if key in props:
@@ -298,52 +272,46 @@ def check_schedule():
                     pre_date = extract_date_from_prop(props.get("前置事件核定日"))
                 
                 rel_days = 0
-                if "相對天數(NTP+天)" in props:
-                    num_prop = props.get("相對天數(NTP+天)")
-                    if isinstance(num_prop, dict) and num_prop.get("type") == "number":
-                        rel_days = num_prop.get("number") or 0
+                num_prop = props.get("相對天數(NTP+天)") or {}
+                if isinstance(num_prop, dict) and num_prop.get("type") == "number":
+                    rel_days = num_prop.get("number") or 0
                 
                 if pre_date and rel_days is not None:
                     due_date = pre_date + timedelta(days=int(rel_days))
 
             if due_date:
                 diff_days = (due_date - today).days
-                tasks.append({
-                    "title": f"[工程] {title}", 
-                    "due_date": due_date.strftime("%Y-%m-%d"), 
-                    "diff_days": diff_days
-                })
+                tasks.append({"title": f"[工程] {title}", "due_date": due_date.strftime("%Y-%m-%d"), "diff_days": diff_days})
 
     # 2. 查詢收發文歷程明細資料庫 (REPLY_DB_ID) 檢查「限辦日期」
     if REPLY_DB_ID:
         reply_url = f"https://api.notion.com/v1/databases/{REPLY_DB_ID}/query"
-        reply_pages = []
-        has_more = True
-        start_cursor = None
+        reply_pages, has_more, start_cursor = [], True, None
         
         while has_more:
             payload = {"start_cursor": start_cursor} if start_cursor else {}
             res = requests.post(reply_url, headers=notion_headers, json=payload)
-            if res.status_code != 200: 
-                break
+            if res.status_code != 200: break
             data = res.json()
             reply_pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
 
         for page in reply_pages:
-            props = page.get("properties", {})
+            props = page.get("properties") or {}
             title = "無標題"
             for prop_name, prop_val in props.items():
-                if prop_val.get("type") == "title":
-                    title_array = prop_val.get("title", [])
-                    if title_array:
+                if isinstance(prop_val, dict) and prop_val.get("type") == "title":
+                    title_array = prop_val.get("title") or []
+                    if title_array and isinstance(title_array[0], dict):
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
             status = ""
             if "文件狀態" in props:
-                status = props.get("文件狀態", {}).get("select", {}).get("name", "") or ""
+                st_prop = props.get("文件狀態") or {}
+                st_select = st_prop.get("select") or {}
+                status = (st_select.get("name") if isinstance(st_select, dict) else "") or ""
             if status == "已完成":
                 continue
 
@@ -356,16 +324,12 @@ def check_schedule():
                 
                 doc_number = ""
                 if "正式文號" in props:
-                    rt = props.get("正式文號", {}).get("rich_text", [])
-                    if rt:
+                    rt = props.get("正式文號", {}).get("rich_text") or []
+                    if rt and isinstance(rt[0], dict):
                         doc_number = rt[0].get("text", {}).get("content", "")
 
                 display_title = f"[收發文] {doc_number} - {title}" if doc_number else f"[收發文] {title}"
-                tasks.append({
-                    "title": display_title,
-                    "due_date": due_date.strftime("%Y-%m-%d"),
-                    "diff_days": diff_days
-                })
+                tasks.append({"title": display_title, "due_date": due_date.strftime("%Y-%m-%d"), "diff_days": diff_days})
 
     # 彙整告警分類
     alerts = {
@@ -402,15 +366,19 @@ def check_schedule():
                 msg_lines.append(f"• {t['title']} ({t['due_date']})")
     
     if not has_alert: 
-        return "No alerts."
+        return "No alerts (checked successfully)."
 
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).push_message(
-            PushMessageRequest(
-                to=ALERT_GROUP_ID, 
-                messages=[TextMessage(text="\n".join(msg_lines))]
+    try:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                PushMessageRequest(
+                    to=ALERT_GROUP_ID, 
+                    messages=[TextMessage(text="\n".join(msg_lines))]
+                )
             )
-        )
+    except Exception as e:
+        return f"Push message failed: {str(e)}", 500
+
     return "OK"
 
 if __name__ == "__main__":
