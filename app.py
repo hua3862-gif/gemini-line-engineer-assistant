@@ -2,10 +2,10 @@ import os
 import requests
 from flask import Flask, request
 from datetime import datetime, timezone, timedelta
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, PushMessageRequest, TextMessage as V3TextMessage
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, PushMessageRequest, ReplyMessageRequest, TextMessage as V3TextMessage
 from linebot import WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage
 
 app = Flask(__name__)
 
@@ -224,13 +224,13 @@ def check_schedule():
 
     if alerts["before_2"]:
         has_alert = True
-        msg_lines.append("\n⚠️️ 2天後到期:")
+        msg_lines.append("\n⚠ 2天後到期:")
         for t in alerts["before_2"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
     if alerts["before_1"]:
         has_alert = True
-        msg_lines.append("\n⚠️ 明天到期:")
+        msg_lines.append("\n⚠️️ 明天到期:")
         for t in alerts["before_1"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
@@ -266,6 +266,33 @@ def check_schedule():
             return f"Error sending LINE message: {e}", 500
 
     return "OK (Checked successfully)"
+
+# LINE Webhook 事件處理：當群組有人打字時，自動回傳該群組的 ID
+if handler:
+    @handler.add(MessageEvent, message=TextMessage)
+    def handle_text_message(event):
+        if event.source.type == 'group':
+            chat_id = event.source.group_id
+            msg = f"【群組 ID 查詢結果】\n群組 ID: {chat_id}"
+        elif event.source.type == 'room':
+            chat_id = event.source.room_id
+            msg = f"【多人聊天室 ID 查詢結果】\n聊天室 ID: {chat_id}"
+        else:
+            chat_id = event.source.user_id
+            msg = f"【個人 ID 查詢結果】\nUser ID: {chat_id}"
+
+        try:
+            configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[V3TextMessage(text=msg)]
+                    )
+                )
+        except Exception as e:
+            print(f"回覆 ID 失敗: {e}")
 
 @app.route("/callback", methods=['POST'])
 def callback():
