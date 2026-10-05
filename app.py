@@ -27,6 +27,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID") # 主資料庫 ID
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
+PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
 REPLY_DB_ID = os.getenv("REPLY_DB_ID", NOTION_DATABASE_ID) 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -248,7 +249,9 @@ def check_schedule():
             status = "未開始"
             for key in ["進度狀態", "進度/狀態", "狀態", "進度"]:
                 if key in props:
-                    status = (props.get(key, {}).get("select", {}).get("name", "未開始")) or "未開始"
+                    prop_obj = props.get(key) or {}
+                    select_obj = prop_obj.get("select") or {}
+                    status = select_obj.get("name", "未開始") or "未開始"
                     break
                     
             if status == "已完成": 
