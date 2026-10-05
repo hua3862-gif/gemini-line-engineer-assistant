@@ -8,13 +8,13 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定
+# 從環境變數讀取設定 (對應您 Render 上的 NOTION_TOKEN)
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
-NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
-NOTION_DB_ID = os.environ.get("NOTION_DB_ID")         # 工程時程資料庫 ID (選填)
-REPLY_DB_ID = os.environ.get("REPLY_DB_ID")           # 收發文歷程明細資料庫 ID (選填)
-LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID")       # 主動推播目標群組/使用者 ID
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID")  # 工程時程資料庫 ID
+REPLY_DB_ID = os.environ.get("REPLY_DB_ID")           # 收發文歷程明細資料庫 ID
+LINE_GROUP_ID = os.environ.get("LINE_GROUP_ID") or os.environ.get("ALERT_GROUP_ID") # 目標群組 ID
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
 handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
@@ -64,7 +64,7 @@ def fetch_notion_database(database_id):
     """查詢 Notion 資料庫的所有分頁"""
     url = f"https://api.notion.com/v1/databases/{database_id}/query"
     headers = {
-        "Authorization": f"Bearer {NOTION_API_KEY}",
+        "Authorization": f"Bearer {NOTION_TOKEN}",
         "Notion-Version": NOTION_VERSION,
         "Content-Type": "application/json"
     }
@@ -99,8 +99,8 @@ def home():
 @app.route("/check-schedule")
 def check_schedule():
     """定時觸發檢查：掃描工程時程與收發文，並發送密集期限警示至 LINE"""
-    if not NOTION_API_KEY:
-        return "Error: NOTION_API_KEY is missing.", 500
+    if not NOTION_TOKEN:
+        return "Error: NOTION_TOKEN is missing.", 500
 
     # 取得台灣時間 (UTC+8)
     tz_taipei = timezone(timedelta(hours=8))
@@ -122,7 +122,7 @@ def check_schedule():
                     break
             
             due_date = None
-            for p_name in ["日期", "到期日", "限辦日期", "截止日期"]:
+            for p_name in ["日期", "到期日", "限辦日期", "截止日期", "預計完成日"]:
                 if p_name in props:
                     due_date = extract_date_from_prop(props.get(p_name), p_name)
                     if due_date:
@@ -280,7 +280,6 @@ if handler and line_bot_api:
     def handle_message(event):
         text = event.message.text.strip()
         if text == "檢查進度":
-            # 也可以直接在聊天室輸入「檢查進度」來觸發
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text="收到！請至瀏覽器或透過定時任務觸發 /check-schedule 來進行完整管考檢查。")
