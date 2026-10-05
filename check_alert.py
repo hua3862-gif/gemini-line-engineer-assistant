@@ -135,18 +135,29 @@ def calc_contract_due(props):
 
 def has_related_replies(props, title=""):
     """
-    🎯 專屬自動化判定：
-    只要「相關收發文歷程」這個關聯欄位裡面有連結任何項目，
-    就代表該工程項目已辦理過，自動排除不發送告警！
+    🔍 終極偵錯與自動排除模式：
+    印出該筆資料所有的屬性名稱與內容，並檢查任何 relation 欄位是否已有關聯。
     """
-    prop = props.get("相關收發文歷程")
-    if prop and isinstance(prop, dict):
-        if prop.get("type") == "relation":
+    print(f"\n----------------------------------------")
+    print(f"👉 正在檢查項目: [{title}]")
+    
+    for key, prop in props.items():
+        if not prop:
+            continue
+        p_type = prop.get("type")
+        
+        if p_type == "relation":
             rel_list = prop.get("relation", [])
-            if rel_list and len(rel_list) > 0:
-                print(f"  👉 [自動排除] 項目 [{title}] 因「相關收發文歷程」已有關聯公文（共 {len(rel_list)} 筆），判定為已辦理，排除告警。")
+            print(f"  [欄位] '{key}' (類型: relation) -> 關聯數量: {len(rel_list)}")
+            if len(rel_list) > 0:
+                print(f"  🎯 命中自動排除！欄位 '{key}' 有 {len(rel_list)} 筆關聯。")
                 return True
-                
+        elif p_type == "formula":
+            print(f"  [欄位] '{key}' (類型: formula)")
+        else:
+            print(f"  [欄位] '{key}' (類型: {p_type})")
+
+    print(f"----------------------------------------")
     return False
 
 # ----------------- 主程式 -----------------
@@ -182,7 +193,7 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 💡 檢查排除條件：如果「相關收發文歷程」有內容，直接跳過不發告警
+            # 💡 檢查排除條件
             if has_related_replies(props, title):
                 continue
 
@@ -262,7 +273,7 @@ def run_check():
             t['overdue_days'] = abs(d)
             alerts["overdue"].append(t)
 
-    msg_lines = ["📢 【工程時程與公文限辦自動告警】"]
+    msg_lines = ["📢 【工程與收發文管考提醒】", "今天是 " + today.strftime('%Y-%m-%d')]
     has_alert = False
 
     if alerts["before_7"]:
