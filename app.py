@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 import os
 import re
 from urllib.parse import quote
+from flask import Flask
 from linebot.v3.messaging import (
     ApiClient,
     Configuration,
@@ -11,7 +12,9 @@ from linebot.v3.messaging import (
 )
 import requests
 
-# ----------------- 環境變數與設定 -----------------
+# ----------------- 應用程式與環境變數設定 -----------------
+app = Flask(__name__)
+
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 PROGRESS_DB_ID = os.getenv("PROGRESS_DB_ID")
@@ -65,7 +68,7 @@ def extract_date_from_prop(prop_info, prop_name=""):
                 return extract_date_from_prop(arr[0], prop_name)
     elif p_type == "rich_text":
         rt = prop_info.get("rich_text", [])
-        if rt and isinstance(rt, list):
+        if rt and isinstance(rt, list) and isinstance(rt[0], dict):
             date_str = rt[0].get("text", {}).get("content", "")
 
     if not date_str:
@@ -111,6 +114,8 @@ def get_base_date(props):
 
     if t == "relation":
         for rel in prop.get("relation", []):
+            if not isinstance(rel, dict):
+                continue
             page = get_page(rel.get("id", ""))
             rel_props = page.get("properties", {})
             for b_key in ["核定日", "契約規定完成日", "預計完成日", "最近發文日期", "關聯限辦日期", "發文日期", "限辦日期", "日期"]:
@@ -200,7 +205,7 @@ def run_check():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
 
-            # 安全檢查文件狀態，若已完成則跳過
+            # 安全取得文件狀態，若為「已完成」則跳過
             status_prop = props.get("文件狀態")
             status = ""
             if isinstance(status_prop, dict):
@@ -293,5 +298,18 @@ def run_check():
     except Exception as e:
         print(f"Push message failed: {str(e)}")
 
+# ----------------- Flask 路由 -----------------
+@app.route("/")
+def home():
+    return "Line Engineer Assistant is running!", 200
+
+@app.route("/check-schedule")
+def check_schedule_route():
+    try:
+        run_check()
+        return "OK (Checked successfully)", 200
+    except Exception as e:
+        return f"Error: {str(e)}", 500
+
 if __name__ == "__main__":
-    run_check()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
