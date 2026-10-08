@@ -1,7 +1,9 @@
 import os
+import json
 import requests
 from flask import Flask, request
 from datetime import datetime, timezone, timedelta
+import google.generativeai as genai
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, PushMessageRequest, ReplyMessageRequest, TextMessage as V3TextMessage
 from linebot import WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -9,12 +11,18 @@ from linebot.models import MessageEvent, TextMessage
 
 app = Flask(__name__)
 
-# 從環境變數讀取設定 (全方位相容 GitHub Secrets / Render 中的各種群組變數名稱)
+# 從環境變數讀取設定
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NOTION_DB_ID = os.environ.get("PROGRESS_DB_ID") or os.environ.get("NOTION_DB_ID")
 REPLY_DB_ID = os.environ.get("REPLY_DB_ID")
+REPAIR_DB_ID = os.environ.get("REPAIR_DB_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+# 初始化 Gemini AI
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # 自動依次檢查常見的群組 ID 變數名稱
 LINE_GROUP_ID = (
@@ -122,7 +130,7 @@ def check_schedule():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
             
-            # 💡 檢查「進度狀態」：只要狀態不是空白且不是「未開始」，就自動排除該項目不發告警
+            # 狀態排除檢查
             status_prop = props.get("進度狀態")
             is_excluded = False
             if isinstance(status_prop, dict):
@@ -142,7 +150,7 @@ def check_schedule():
             if is_excluded:
                 continue
 
-            # 💡 計算到期日：優先抓手動輸入的「預計完成日」，其次抓「契約規定完成日」公式
+            # 計算到期日：優先抓手動輸入的「預計完成日」，其次抓「契約規定完成日」
             due_date = None
             for p_name in ["預計完成日", "契約規定完成日", "日期", "到期日", "限辦日期", "截止日期"]:
                 if p_name in props:
@@ -268,10 +276,9 @@ def check_schedule():
         for t in alerts["overdue"]:
             msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
 
-    # 5. 發送至 LINE (帶有除錯 Log)
+    # 5. 發送至 LINE
     if has_alert and LINE_CHANNEL_ACCESS_TOKEN and LINE_GROUP_ID:
         full_message = "\n".join(msg_lines)
-        print(f"DEBUG - 準備發送給群組 ID: [{LINE_GROUP_ID}]")
         try:
             configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
             with ApiClient(configuration) as api_client:
@@ -288,32 +295,144 @@ def check_schedule():
 
     return "OK (Checked successfully)"
 
-# LINE Webhook 事件處理：當群組有人打字時，自動回傳該群組的 ID
+# LINE Webhook 事件處理：整合 Gemini AI 辨識並自動填入 Notion
 if handler:
     @handler.add(MessageEvent, message=TextMessage)
     def handle_text_message(event):
-        if event.source.type == 'group':
-            chat_id = event.source.group_id
-            msg = f"【群組 ID 查詢結果】\n群組 ID: {chat_id}"
-        elif event.source.type == 'room':
-            chat_id = event.source.room_id
-            msg = f"【多人聊天室 ID 查詢結果】\n聊天室 ID: {chat_id}"
-        else:
-            chat_id = event.source.user_id
-            msg = f"【個人 ID 查詢結果】\nUser ID: {chat_id}"
+        user_text = event.message.text.strip()
+
+        # 如果訊息是查詢 ID 指令
+        if user_text.lower() == "id" or user_text == "ID":
+            if event.source.type == 'group':
+                chat_id = event.source.group_id
+                msg = f"【群組 ID 查詢結果】\n群組 ID: {chat_id}"
+            elif event.source.type == 'room':
+                chat_id = event.source.room_id
+                msg = f"【多人聊天室 ID 查詢結果】\n聊天室 ID: {chat_id}"
+            else:
+                chat_id = event.source.user_id
+                msg = f"【個人 ID 查詢結果】\nUser ID: {chat_id}"
+            
+            reply_to_line(event.reply_token, msg)
+            return
+
+        # 使用 Gemini AI 解析訊息格式與內容
+        if not GEMINI_API_KEY:
+            reply_to_line(event.reply_token, "錯誤：未設定 GEMINI_API_KEY")
+            return
 
         try:
-            configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-            with ApiClient(configuration) as api_client:
-                line_bot_api = MessagingApi(api_client)
-                line_bot_api.reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[V3TextMessage(text=msg)]
-                    )
-                )
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            prompt = f"""
+請分析以下使用者傳入的訊息內容，判斷它是屬於「報修」還是「收發文（公文）」。
+請嚴格以 JSON 格式回傳，不要包含額外文字或 markdown 程式碼結界（如 ```json）。
+
+判斷規則：
+1. 若訊息開頭為「報修」或內容明顯是工程缺失、報修事項，請回傳：
+{{
+  "type": "repair",
+  "title": "摘要標題",
+  "content": "詳細內容"
+}}
+
+2. 若訊息內容包含公文特徵（如發文日期、發文字號、主旨、期限等），請回傳：
+{{
+  "type": "reply",
+  "doc_date": "YYYY-MM-DD 或民國轉西元日期",
+  "doc_number": "發文字號",
+  "subject": "主旨",
+  "deadline": "YYYY-MM-DD 或期限日期（若無則填空字串）",
+  "sender": ["發文單位1", "發文單位2"],
+  "cc": ["副本單位1"]
+}}
+
+訊息內容：
+{user_text}
+"""
+            response = model.generate_content(prompt)
+            result_text = response.text.strip()
+            # 清除可能的 markdown 包覆
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+            result_text = result_text.strip("` \n")
+
+            data = json.loads(result_text)
+            msg_type = data.get("type")
+
+            # 寫入 Notion
+            headers = {
+                "Authorization": f"Bearer {NOTION_TOKEN}",
+                "Notion-Version": NOTION_VERSION,
+                "Content-Type": "application/json"
+            }
+
+            if msg_type == "repair" and REPAIR_DB_ID:
+                # 寫入報修資料庫
+                payload = {
+                    "parent": {"database_id": REPAIR_DB_ID},
+                    "properties": {
+                        "名稱": {"title": [{"text": {"content": data.get("title", "未命名報修")}}]},
+                        "內容": {"rich_text": [{"text": {"content": data.get("content", user_text)}}]}
+                    }
+                }
+                res = requests.post("[https://api.com/v1/pages](https://api.com/v1/pages)" if False else "[https://api.notion.com/v1/pages](https://api.notion.com/v1/pages)", json=payload, headers=headers)
+                if res.status_code == 200:
+                    reply_to_line(event.reply_token, f"✅ 成功將報修事項寫入 Notion 報修資料庫！\n標題：{data.get('title')}")
+                else:
+                    reply_to_line(event.reply_token, f"⚠️ AI 解析成功，但寫入 Notion 失敗：{res.text}")
+
+            elif msg_type == "reply" and REPLY_DB_ID:
+                # 寫入收發文歷程明細資料庫 (修復多選欄位格式)
+                props_payload = {
+                    "主旨": {"title": [{"text": {"content": data.get("subject", "無主旨")}}]}
+                }
+                if data.get("doc_number"):
+                    props_payload["正式文號"] = {"rich_text": [{"text": {"content": data.get("doc_number")}}]}
+                if data.get("deadline"):
+                    props_payload["限辦日期"] = {"date": {"start": data.get("deadline")}}
+                if data.get("doc_date"):
+                    props_payload["發文日期"] = {"date": {"start": data.get("doc_date")}}
+                
+                # 確保發文單位、正本、副本以陣列包裝 (multi_select 格式)
+                if data.get("sender"):
+                    senders = data.get("sender")
+                    if isinstance(senders, list):
+                        props_payload["發文單位"] = {"multi_select": [{"name": s} for s in senders]}
+                    else:
+                        props_payload["發文單位"] = {"multi_select": [{"name": senders}]}
+
+                payload = {
+                    "parent": {"database_id": REPLY_DB_ID},
+                    "properties": props_payload
+                }
+                res = requests.post("[https://api.notion.com/v1/pages](https://api.notion.com/v1/pages)", json=payload, headers=headers)
+                if res.status_code == 200:
+                    reply_to_line(event.reply_token, f"✅ 成功將收發文寫入 Notion！\n文號：{data.get('doc_number')}")
+                else:
+                    reply_to_line(event.reply_token, f"⚠️ AI 解析成功，但寫入 Notion 失敗：{res.text}")
+            else:
+                reply_to_line(event.reply_token, f"🤖 AI 解析結果：\n{result_text}")
+
         except Exception as e:
-            print(f"回覆 ID 失敗: {e}")
+            print(f"Gemini 解析或寫入 Notion 錯誤: {e}")
+            reply_to_line(event.reply_token, f"❌ 處理訊息發生錯誤: {e}")
+
+def reply_to_line(reply_token, text):
+    """小幫手函式：回覆 LINE 訊息"""
+    try:
+        configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=reply_token,
+                    messages=[V3TextMessage(text=text)]
+                )
+            )
+    except Exception as e:
+    print(f"回覆 LINE 失敗: {e}")
 
 @app.route("/callback", methods=['POST'])
 def callback():
