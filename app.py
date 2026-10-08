@@ -122,8 +122,29 @@ def check_schedule():
                         title = title_array[0].get("text", {}).get("content", "無標題")
                     break
             
+            # 💡 檢查「進度狀態」：只要狀態不是空白且不是「未開始」，就自動排除該項目不發告警
+            status_prop = props.get("進度狀態")
+            is_excluded = False
+            if isinstance(status_prop, dict):
+                p_type = status_prop.get("type")
+                if p_type == "select":
+                    select_obj = status_prop.get("select")
+                    if isinstance(select_obj, dict):
+                        status_name = select_obj.get("name", "").strip()
+                        if status_name and status_name != "未開始":
+                            is_excluded = True
+                elif p_type == "status":
+                    status_obj = status_prop.get("status")
+                    if isinstance(status_obj, dict):
+                        status_name = status_obj.get("name", "").strip()
+                        if status_name and status_name != "未開始":
+                            is_excluded = True
+            if is_excluded:
+                continue
+
+            # 💡 計算到期日：優先抓手動輸入的「預計完成日」，其次抓「契約規定完成日」公式
             due_date = None
-            for p_name in ["日期", "到期日", "限辦日期", "截止日期", "預計完成日"]:
+            for p_name in ["預計完成日", "契約規定完成日", "日期", "到期日", "限辦日期", "截止日期"]:
                 if p_name in props:
                     due_date = extract_date_from_prop(props.get(p_name), p_name)
                     if due_date:
@@ -230,7 +251,7 @@ def check_schedule():
 
     if alerts["before_1"]:
         has_alert = True
-        msg_lines.append("\n⚠️️ 明天到期:")
+        msg_lines.append("\n⚠ 明天到期:")
         for t in alerts["before_1"]:
             msg_lines.append(f"• {t['title']} (到期日: {t['due_date']})")
 
