@@ -299,11 +299,11 @@ def run_check():
         msg_lines.append("\n❌ 已逾期項目:")
         alerts["overdue"].sort(key=lambda x: x['diff_days'])
         for t in alerts["overdue"]:
-            msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天，原到期日: {t['due_date']})")
+            msg_lines.append(f"• {t['title']} (已逾期 {t['overdue_days']} 天數，原到期日: {t['due_date']})")
 
+    # 💡 修改處：如果沒有符合條件的項目，不再直接 return，而是加上平安回報訊息
     if not has_alert: 
-        print("沒有符合條件的即將到期或逾期項目。")
-        return
+        msg_lines.append("\n✅ 今日所有管考項目皆在安全範圍內，無即將到期或逾期項目。")
 
     with ApiClient(configuration) as api_client:
         MessagingApi(api_client).push_message(
